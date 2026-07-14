@@ -162,7 +162,7 @@ final class NetworkPage: FlippedView {
         addLegend("下载", color: Self.downColor, x: PageUI.contentX, y: 36)
         addLegend("上传", color: Self.upColor, x: PageUI.contentX + 138, y: 36)
 
-        PageUI.caption("负载历史（上=上传 下=下载）", y: 58, in: self)
+        PageUI.caption("负载历史", y: 58, in: self)
         chart.upColor = Self.upColor
         chart.downColor = Self.downColor
         chart.frame = NSRect(x: PageUI.contentX, y: 74, width: PageUI.contentWidth, height: 92)
@@ -250,7 +250,7 @@ final class SnapPage: FlippedView {
     private let loginCheckbox = NSButton(checkboxWithTitle: "开机时自动启动", target: nil, action: nil)
     private let configButton = NSButton(title: "编辑布局配置…", target: nil, action: nil)
     private let reloadButton = NSButton(title: "重新加载", target: nil, action: nil)
-    private let quitButton = NSButton(title: "退出 MyOwnTool", target: nil, action: nil)
+    private let quitButton = NSButton(title: "", target: nil, action: nil)
 
     init(actions: SnapPageActions) {
         self.actions = actions
@@ -277,6 +277,13 @@ final class SnapPage: FlippedView {
             checkbox.font = .systemFont(ofSize: 12)
             addSubview(checkbox)
         }
+
+        // 破坏性动作：红底白字
+        quitButton.bezelColor = .systemRed
+        quitButton.attributedTitle = NSAttributedString(string: "退出应用", attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -315,8 +322,9 @@ final class SnapPage: FlippedView {
         y += 6
         configButton.frame = NSRect(x: PageUI.contentX, y: y, width: 130, height: 24)
         reloadButton.frame = NSRect(x: PageUI.contentX + 138, y: y, width: 130, height: 24)
-        y += 32
-        quitButton.frame = NSRect(x: PageUI.contentX, y: y, width: PageUI.contentWidth, height: 24)
+        // 退出固定在页面最底部
+        quitButton.frame = NSRect(x: PageUI.contentX, y: bounds.height - 36,
+                                  width: PageUI.contentWidth, height: 24)
     }
 
     @objc private func toggleSnap() { actions.setSnapEnabled(snapCheckbox.state == .on) }
