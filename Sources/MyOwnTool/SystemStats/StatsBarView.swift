@@ -1,9 +1,9 @@
 import AppKit
 
-/// 菜单栏内容视图：网速两行数字（上=上传 下=下载）| CPU/GPU/RAM 竖向进度条 | AI 用量横条。
+/// 菜单栏内容视图：网速两行数字（上=上传 下=下载）| CPU/GPU/RAM 竖向进度条 | AI 用量横条（三纵三横）。
 /// 竖条从底向上填充 DESIGN.md 指标色；CPU/GPU 描边四档表示温度
 /// （<45℃ 无、黄 45~60、橙 60~75、红 75~90、紫 >90 且闪烁）。
-/// AI 横条（上=ChatGPT 下=Claude）显示 5 小时用量，数据未接入时只画轨道。
+/// AI 横条从上到下 Codex/Claude/Gemini，显示 5 小时用量，数据未接入时只画轨道。
 /// 固定总宽避免数字跳动引起菜单栏抖动；作为 button 子视图自动跟随菜单栏明暗。
 final class StatsBarView: NSView {
     // 布局常量：[边距][网速块][间距][竖条块][间距][AI 横条块][边距]
@@ -17,7 +17,8 @@ final class StatsBarView: NSView {
     private static let barHeight: CGFloat = 16
     private static let barGap: CGFloat = 4
 
-    // AI 5 小时用量横条（上=ChatGPT 下=Claude），数据未接入时只画轨道
+    // AI 5 小时用量横条（上=Codex 中=Claude 下=Gemini），数据未接入时只画轨道；
+    // 三条总高 = 4×3 + 2×2 = 16pt，与竖条等高对齐
     private static let aiWidth: CGFloat = 22
     private static let aiBarHeight: CGFloat = 4
     private static let aiBarGap: CGFloat = 2
@@ -31,6 +32,7 @@ final class StatsBarView: NSView {
     /// AI 5h 用量（0~1），nil = 未接入数据
     private var openAIUsage: Double?
     private var claudeUsage: Double?
+    private var geminiUsage: Double?
 
     // >90℃ 紧急档描边闪烁
     private var blinkTimer: Timer?
@@ -48,10 +50,11 @@ final class StatsBarView: NSView {
         needsDisplay = true
     }
 
-    /// 将来接入 Codex/Claude 订阅数据后调用
-    func updateAIUsage(openAI: Double?, claude: Double?) {
+    /// 将来接入 Codex/Claude/Gemini 订阅数据后调用（各值 0~1，nil=无数据只画轨道）
+    func updateAIUsage(openAI: Double?, claude: Double?, gemini: Double?) {
         openAIUsage = openAI
         claudeUsage = claude
+        geminiUsage = gemini
         needsDisplay = true
     }
 
@@ -165,12 +168,14 @@ final class StatsBarView: NSView {
 
     private func drawAIBars() {
         let x = Self.margin + Self.speedWidth + Self.gap + Self.barsWidth + Self.gap
-        let blockHeight = Self.aiBarHeight * 2 + Self.aiBarGap
+        let blockHeight = Self.aiBarHeight * 3 + Self.aiBarGap * 2
         var y = (bounds.height - blockHeight) / 2
 
-        drawAIBar(x: x, y: y, usage: openAIUsage, fill: StatsPalette.openAI)
+        drawAIBar(x: x, y: y, usage: openAIUsage, fill: StatsPalette.openAI)   // Codex
         y += Self.aiBarHeight + Self.aiBarGap
-        drawAIBar(x: x, y: y, usage: claudeUsage, fill: StatsPalette.claude)
+        drawAIBar(x: x, y: y, usage: claudeUsage, fill: StatsPalette.claude)   // Claude
+        y += Self.aiBarHeight + Self.aiBarGap
+        drawAIBar(x: x, y: y, usage: geminiUsage, fill: StatsPalette.gemini)   // Gemini
     }
 
     /// 横向进度条：从左向右填充；usage 为 nil（未接入）时只画轨道

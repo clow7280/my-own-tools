@@ -7,12 +7,14 @@ enum StatsPalette {
     // 指标色（菜单栏竖条填充 + 弹窗曲线）
     static let cpu = dynamic(light: 0x3B82F6, dark: 0x60A5FA)      // 蓝
     static let gpu = dynamic(light: 0x8B5CF6, dark: 0xA78BFA)      // 紫
-    // 粉色感知亮度天然高于蓝/紫，取深一档（600/500）平衡三条的视觉强度
-    static let ram = dynamic(light: 0xDB2777, dark: 0xEC4899)      // 粉
+    // 粉色感知亮度天然高于蓝/紫，再压深一档（700/600）：既平衡视觉强度，
+    // 也给「变化提亮」（混白 40%）留出可感知的头部空间
+    static let ram = dynamic(light: 0xBE185D, dark: 0xDB2777)      // 玫红
 
-    // AI 品牌色（预留给订阅用量横条）
-    static let openAI = dynamic(light: 0x10A37F, dark: 0x10A37F)   // OpenAI 青绿
+    // AI 品牌色（订阅用量横条：Codex 绿 / Claude 珊瑚 / Gemini 蓝）
+    static let openAI = dynamic(light: 0x10A37F, dark: 0x10A37F)   // OpenAI/Codex 青绿
     static let claude = dynamic(light: 0xD97757, dark: 0xCC6B4A)   // Claude 珊瑚
+    static let gemini = dynamic(light: 0x4285F4, dark: 0x8AB4F8)   // Gemini/Antigravity 蓝
 
     // 网络图（沿用 红=上传 蓝=下载 惯例，蓝与 CPU 同色但不同页面出现）
     static let netUp = dynamic(light: 0xE34948, dark: 0xE66767)
