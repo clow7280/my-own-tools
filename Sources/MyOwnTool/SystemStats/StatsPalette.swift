@@ -7,7 +7,8 @@ enum StatsPalette {
     // 指标色（菜单栏竖条填充 + 弹窗曲线）
     static let cpu = dynamic(light: 0x3B82F6, dark: 0x60A5FA)      // 蓝
     static let gpu = dynamic(light: 0x8B5CF6, dark: 0xA78BFA)      // 紫
-    static let ram = dynamic(light: 0xEC4899, dark: 0xF472B6)      // 粉
+    // 粉色感知亮度天然高于蓝/紫，取深一档（600/500）平衡三条的视觉强度
+    static let ram = dynamic(light: 0xDB2777, dark: 0xEC4899)      // 粉
 
     // AI 品牌色（预留给订阅用量横条）
     static let openAI = dynamic(light: 0x10A37F, dark: 0x10A37F)   // OpenAI 青绿
