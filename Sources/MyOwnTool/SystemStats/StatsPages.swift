@@ -37,6 +37,129 @@ enum PageUI {
     }
 }
 
+/// 细横向用量条：轨道 + 从左向右填充
+final class UsageBar: NSView {
+    var fraction: Double = 0 { didSet { needsDisplay = true } }
+    var color: NSColor = .controlAccentColor
+
+    override func draw(_ dirtyRect: NSRect) {
+        let radius = bounds.height / 2
+        NSColor.labelColor.withAlphaComponent(0.15).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
+        let w = max(bounds.height, bounds.width * min(max(fraction, 0), 1))
+        color.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: w, height: bounds.height),
+                     xRadius: radius, yRadius: radius).fill()
+    }
+}
+
+// MARK: - AI 用量页
+
+/// Codex / Claude / Gemini 三家用量，各显示 5h、7d 条与分模型占比、重置倒计时
+final class AIPage: FlippedView {
+    private let usages: () -> [(name: String, color: NSColor, usage: AIUsage)]
+    private var sections: [ProviderSection] = []
+
+    init(usages: @escaping () -> [(name: String, color: NSColor, usage: AIUsage)]) {
+        self.usages = usages
+        super.init(frame: .zero)
+        var y: CGFloat = 8
+        for item in usages() {
+            let section = ProviderSection(name: item.name, color: item.color)
+            section.frame = NSRect(x: 0, y: y, width: PageUI.contentWidth + 32, height: 92)
+            addSubview(section)
+            sections.append(section)
+            y += 96
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func update() {
+        for (section, item) in zip(sections, usages()) {
+            section.apply(item.usage)
+        }
+    }
+
+    /// 单家分区
+    private final class ProviderSection: FlippedView {
+        private let color: NSColor
+        private let nameLabel: NSTextField
+        private let planLabel = PageUI.label(size: 10, color: .tertiaryLabelColor)
+        private let fiveLabel = PageUI.label("5 小时", size: 10, color: .secondaryLabelColor)
+        private let sevenLabel = PageUI.label("7 天", size: 10, color: .secondaryLabelColor)
+        private let fiveValue = PageUI.label(size: 10, mono: true)
+        private let sevenValue = PageUI.label(size: 10, mono: true)
+        private let fiveBar = UsageBar()
+        private let sevenBar = UsageBar()
+        private let modelLabel = PageUI.label(size: 10, mono: true, color: .secondaryLabelColor)
+        private let resetLabel = PageUI.label(size: 9, color: .tertiaryLabelColor)
+
+        init(name: String, color: NSColor) {
+            self.color = color
+            nameLabel = PageUI.label(name, size: 12, weight: .semibold, color: color)
+            super.init(frame: .zero)
+
+            nameLabel.frame = NSRect(x: PageUI.contentX, y: 0, width: 140, height: 16)
+            planLabel.alignment = .right
+            planLabel.frame = NSRect(x: PageUI.contentX + 120, y: 2, width: PageUI.contentWidth - 120, height: 14)
+            addSubview(nameLabel)
+            addSubview(planLabel)
+
+            layoutBarRow(label: fiveLabel, bar: fiveBar, value: fiveValue, y: 22)
+            layoutBarRow(label: sevenLabel, bar: sevenBar, value: sevenValue, y: 40)
+            for bar in [fiveBar, sevenBar] { bar.color = color }
+
+            modelLabel.frame = NSRect(x: PageUI.contentX, y: 58, width: PageUI.contentWidth, height: 14)
+            resetLabel.frame = NSRect(x: PageUI.contentX, y: 74, width: PageUI.contentWidth, height: 12)
+            addSubview(modelLabel)
+            addSubview(resetLabel)
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
+
+        private func layoutBarRow(label: NSTextField, bar: UsageBar, value: NSTextField, y: CGFloat) {
+            label.frame = NSRect(x: PageUI.contentX, y: y, width: 40, height: 14)
+            bar.frame = NSRect(x: PageUI.contentX + 44, y: y + 3, width: 160, height: 6)
+            value.alignment = .right
+            value.frame = NSRect(x: PageUI.contentX + 210, y: y, width: 58, height: 14)
+            addSubview(label)
+            addSubview(bar)
+            addSubview(value)
+        }
+
+        func apply(_ usage: AIUsage) {
+            planLabel.stringValue = usage.error ?? (usage.plan ?? "")
+            setBar(fiveBar, value: fiveValue, fraction: usage.fiveHour)
+            setBar(sevenBar, value: sevenValue, fraction: usage.sevenDay)
+            modelLabel.stringValue = usage.models
+                .map { "\($0.name) \(StatsFormat.percent($0.percent))" }
+                .joined(separator: "  ·  ")
+            // 优先显示 5h 重置，无则 7d
+            if let reset = usage.fiveHourResetsAt ?? usage.sevenDayResetsAt {
+                resetLabel.stringValue = "重置：" + Self.countdown(to: reset)
+            } else {
+                resetLabel.stringValue = ""
+            }
+        }
+
+        private func setBar(_ bar: UsageBar, value: NSTextField, fraction: Double?) {
+            bar.fraction = fraction ?? 0
+            value.stringValue = fraction.map { StatsFormat.percent($0) } ?? "—"
+        }
+
+        private static func countdown(to date: Date) -> String {
+            let seconds = date.timeIntervalSinceNow
+            guard seconds > 0 else { return "即将" }
+            let hours = Int(seconds) / 3600
+            let minutes = (Int(seconds) % 3600) / 60
+            if hours >= 24 { return "\(hours / 24) 天 \(hours % 24) 小时后" }
+            if hours >= 1 { return "\(hours) 小时 \(minutes) 分后" }
+            return "\(minutes) 分后"
+        }
+    }
+}
+
 // MARK: - 占用页
 
 /// CPU / GPU / 内存 三段，各带 30 秒曲线

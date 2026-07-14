@@ -12,6 +12,7 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     private let usagePage = UsagePage()
     private let tempPage = TempPage()
     private let netPage = NetworkPage()
+    private let aiPage: AIPage
     private let snapPage: SnapPage
     private let pages: [NSView]
 
@@ -19,18 +20,11 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     private var lastClose = Date.distantPast
     private var mouseMonitor: Any?
 
-    init(snapActions: SnapPageActions) {
+    init(snapActions: SnapPageActions,
+         aiUsages: @escaping () -> [(name: String, color: NSColor, usage: AIUsage)]) {
         window = PopupWindow(size: Self.size)
         snapPage = SnapPage(actions: snapActions)
-
-        let aiPage = FlippedView(frame: .zero)
-        let placeholder = NSTextField(labelWithString: "Codex / Claude 订阅用量\n预留位，待接入")
-        placeholder.font = .systemFont(ofSize: 12)
-        placeholder.textColor = .secondaryLabelColor
-        placeholder.alignment = .center
-        placeholder.maximumNumberOfLines = 2
-        placeholder.frame = NSRect(x: 16, y: 120, width: Self.size.width - 32, height: 40)
-        aiPage.addSubview(placeholder)
+        aiPage = AIPage(usages: aiUsages)
 
         pages = [usagePage, tempPage, netPage, aiPage, snapPage]
         tabs = NSSegmentedControl(labels: ["占用", "温度", "网络", "AI", "设置"],
@@ -106,6 +100,12 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         refreshVisiblePage()
     }
 
+    /// AI 用量刷新时调用（若 AI 页正显示则重绘）
+    func refreshAI() {
+        guard window.isVisible, tabs.selectedSegment == 3 else { return }
+        aiPage.update()
+    }
+
     private func close() {
         guard window.isVisible else { return }
         window.orderOut(nil)
@@ -149,6 +149,7 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         case 2:
             netPage.update(history)
             if justShown { netPage.onShow() }
+        case 3: aiPage.update()
         case 4:
             if justShown { snapPage.onShow() }
         default: break

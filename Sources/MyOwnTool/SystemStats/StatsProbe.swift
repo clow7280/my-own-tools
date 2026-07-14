@@ -59,3 +59,41 @@ enum StatsProbe {
         exit(0)
     }
 }
+
+/// AI 用量探针：`MyOwnTool --ai-probe`，验证 Claude/Codex 凭证读取与端点解析
+enum AIProbe {
+    static func run() -> Never {
+        print("== myowntool AI 用量探针 ==")
+        let group = DispatchGroup()
+        // 凭证读取（含 Keychain）放后台，避免弹窗阻塞主线程，主线程照常泵 runloop
+        group.enter()
+        DispatchQueue.global().async {
+            ClaudeUsageReader.fetch { print(format("Claude", $0)); group.leave() }
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            CodexUsageReader.fetch { print(format("Codex", $0)); group.leave() }
+        }
+        let deadline = Date().addingTimeInterval(25)
+        var done = false
+        group.notify(queue: .main) { done = true }
+        while !done && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.2))
+        }
+        if !done { print("[超时：部分数据未返回，可能是 Keychain 授权未完成]") }
+        exit(0)
+    }
+
+    private static func format(_ name: String, _ u: AIUsage) -> String {
+        func pct(_ v: Double?) -> String { v.map { String(format: "%.0f%%", $0 * 100) } ?? "—" }
+        var s = "\(name): 5h=\(pct(u.fiveHour))  7d=\(pct(u.sevenDay))  plan=\(u.plan ?? "?")"
+        if let e = u.error { s += "  [\(e)]" }
+        if !u.models.isEmpty {
+            s += "\n  模型：" + u.models.map { "\($0.name) \(pct($0.percent))" }.joined(separator: "  ·  ")
+        }
+        if let r = u.fiveHourResetsAt ?? u.sevenDayResetsAt {
+            s += "\n  重置：\(r)"
+        }
+        return s
+    }
+}

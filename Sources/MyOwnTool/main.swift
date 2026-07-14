@@ -3,6 +3,9 @@ import AppKit
 if CommandLine.arguments.contains("--stats-probe") {
     StatsProbe.run()
 }
+if CommandLine.arguments.contains("--ai-probe") {
+    AIProbe.run()
+}
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

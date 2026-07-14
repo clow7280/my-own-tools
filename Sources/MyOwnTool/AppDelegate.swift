@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statsBarView: StatsBarView?
     private var statsPopup: StatsPopupController?
     private let statsMonitor = StatsMonitor()
+    private let aiMonitor = AIUsageMonitor()
 
     /// 登录项注册要求以 .app 形式运行；swift build 的裸二进制不支持
     private var isRunningFromBundle: Bool {
@@ -62,12 +63,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.statsPopup?.update(history: self.statsMonitor.history)
         }
         statsMonitor.start()
+
+        aiMonitor.onUpdate = { [weak self] in
+            guard let self else { return }
+            self.statsBarView?.updateAIUsage(openAI: self.aiMonitor.codex.barValue,
+                                             claude: self.aiMonitor.claude.barValue,
+                                             gemini: self.aiMonitor.gemini.barValue)
+            self.statsPopup?.refreshAI()
+        }
+        aiMonitor.start()
     }
 
     @objc private func toggleStatsPopup() {
         guard let button = statsItem?.button else { return }
         if statsPopup == nil {
-            statsPopup = StatsPopupController(snapActions: makeSnapActions())
+            statsPopup = StatsPopupController(snapActions: makeSnapActions(), aiUsages: { [aiMonitor] in
+                [("Codex", StatsPalette.openAI, aiMonitor.codex),
+                 ("Claude", StatsPalette.claude, aiMonitor.claude),
+                 ("Gemini", StatsPalette.gemini, aiMonitor.gemini)]
+            })
         }
         statsPopup?.toggle(relativeTo: button, history: statsMonitor.history)
     }

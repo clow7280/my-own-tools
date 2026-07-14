@@ -64,8 +64,9 @@
 - 竖向进度条**从底向上**填充指标色；CPU/GPU 条超温时出现警示描边（四档见上）。
 - **突发提亮**：单次采样（1s）内某指标变化量 > 30 个百分点时，该条填充
   向白色混合 40% 提亮一拍，变化回落后自然恢复。
-- **AI 横条显示 5 小时订阅用量**（Codex/Claude/Gemini），从左向右填充，
-  数据未接入时只画轨道（占位已就绪，接入时调用 `StatsBarView.updateAIUsage`）。
+- **AI 横条显示订阅用量**（Codex/Claude/Gemini），从左向右填充，取值优先 5h、
+  无 5h 时退回 7d。Claude/Codex 已接入真实数据（见弹窗 AI 页与 `AIUsage.swift`）；
+  Gemini 需先装 Antigravity，暂只画轨道。
 
 ## 历史记录
 
