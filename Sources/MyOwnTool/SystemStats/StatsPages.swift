@@ -50,9 +50,9 @@ final class UsagePage: FlippedView {
 
     init() {
         super.init(frame: .zero)
-        addSection("CPU", value: cpuValue, chart: cpuChart, tint: .systemBlue, y: 12)
-        addSection("GPU", value: gpuValue, chart: gpuChart, tint: .systemPurple, y: 98)
-        addSection("内存", value: ramValue, chart: ramChart, tint: .systemTeal, y: 184)
+        addSection("CPU", value: cpuValue, chart: cpuChart, tint: StatsPalette.cpu, y: 12)
+        addSection("GPU", value: gpuValue, chart: gpuChart, tint: StatsPalette.gpu, y: 98)
+        addSection("内存", value: ramValue, chart: ramChart, tint: StatsPalette.ram, y: 184)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -119,17 +119,18 @@ final class TempPage: FlippedView {
 
     func update(_ history: [StatsSample]) {
         guard let last = history.last else { return }
+        // 文字不用系列色/状态色（DESIGN.md 规则）；曲线用对应指标的固定色
         updateSection(value: cpuValue, chart: cpuChart, temp: last.cpuTemp,
-                      values: history.map { $0.cpuTemp ?? 0 })
+                      values: history.map { $0.cpuTemp ?? 0 }, tint: StatsPalette.cpu)
         updateSection(value: gpuValue, chart: gpuChart, temp: last.gpuTemp,
-                      values: history.map { $0.gpuTemp ?? 0 })
+                      values: history.map { $0.gpuTemp ?? 0 }, tint: StatsPalette.gpu)
     }
 
-    private func updateSection(value: NSTextField, chart: LineChartView, temp: Double?, values: [Double]) {
+    private func updateSection(value: NSTextField, chart: LineChartView, temp: Double?,
+                               values: [Double], tint: NSColor) {
         value.stringValue = temp.map { String(format: "%.1f℃", $0) } ?? "—"
-        let color = StatsBarView.tempColor(temp) ?? .secondaryLabelColor
-        value.textColor = color
-        chart.update([.init(values: values, color: color)])
+        value.textColor = .labelColor
+        chart.update([.init(values: values, color: tint)])
     }
 }
 
@@ -137,8 +138,8 @@ final class TempPage: FlippedView {
 
 /// 仿 Stats 网络页：下载/上传大字 + 上下镜像负载历史 + 出口接口/内网 IP/国内外公网 IP
 final class NetworkPage: FlippedView {
-    private static let upColor = NSColor.systemRed
-    private static let downColor = NSColor.systemBlue
+    private static let upColor = StatsPalette.netUp
+    private static let downColor = StatsPalette.netDown
 
     private let downValue = PageUI.label(size: 20, weight: .semibold, mono: true)
     private let upValue = PageUI.label(size: 20, weight: .semibold, mono: true)
@@ -225,9 +226,9 @@ final class NetworkPage: FlippedView {
     }
 }
 
-// MARK: - 分屏页
+// MARK: - 应用设置页
 
-/// 分屏功能的状态与设置（原菜单栏菜单的全部功能移到这里）
+/// 应用设置：分屏功能的状态开关、开机自启、布局配置与退出
 struct SnapPageActions {
     var isTrusted: () -> Bool
     var isSnapEnabled: () -> Bool
@@ -242,75 +243,80 @@ struct SnapPageActions {
 
 final class SnapPage: FlippedView {
     private let actions: SnapPageActions
+    private let permissionName = PageUI.label("辅助功能权限", size: 11, color: .secondaryLabelColor)
     private let permissionValue = PageUI.label(size: 11, weight: .semibold)
     private let axButton = NSButton(title: "打开「辅助功能」设置…", target: nil, action: nil)
     private let snapCheckbox = NSButton(checkboxWithTitle: "Shift 拖拽分屏", target: nil, action: nil)
     private let loginCheckbox = NSButton(checkboxWithTitle: "开机时自动启动", target: nil, action: nil)
+    private let configButton = NSButton(title: "编辑布局配置…", target: nil, action: nil)
+    private let reloadButton = NSButton(title: "重新加载", target: nil, action: nil)
+    private let quitButton = NSButton(title: "退出 MyOwnTool", target: nil, action: nil)
 
     init(actions: SnapPageActions) {
         self.actions = actions
         super.init(frame: .zero)
 
-        let name = PageUI.label("辅助功能权限", size: 11, color: .secondaryLabelColor)
-        name.frame = NSRect(x: PageUI.contentX, y: 16, width: 110, height: 15)
-        addSubview(name)
         permissionValue.alignment = .right
-        permissionValue.frame = NSRect(x: PageUI.contentX + 110, y: 16, width: PageUI.contentWidth - 110, height: 15)
+        addSubview(permissionName)
         addSubview(permissionValue)
 
-        axButton.target = self
-        axButton.action = #selector(openAX)
-        axButton.bezelStyle = .rounded
-        axButton.font = .systemFont(ofSize: 11)
-        axButton.frame = NSRect(x: PageUI.contentX, y: 40, width: 180, height: 24)
-        addSubview(axButton)
-
-        snapCheckbox.target = self
-        snapCheckbox.action = #selector(toggleSnap)
-        snapCheckbox.font = .systemFont(ofSize: 12)
-        snapCheckbox.frame = NSRect(x: PageUI.contentX, y: 78, width: PageUI.contentWidth, height: 18)
-        addSubview(snapCheckbox)
-
-        loginCheckbox.target = self
-        loginCheckbox.action = #selector(toggleLogin)
-        loginCheckbox.font = .systemFont(ofSize: 12)
-        loginCheckbox.frame = NSRect(x: PageUI.contentX, y: 104, width: PageUI.contentWidth, height: 18)
-        addSubview(loginCheckbox)
-
-        let configButton = NSButton(title: "编辑布局配置…", target: self, action: #selector(openConfig))
-        configButton.bezelStyle = .rounded
-        configButton.font = .systemFont(ofSize: 11)
-        configButton.frame = NSRect(x: PageUI.contentX, y: 142, width: 130, height: 24)
-        addSubview(configButton)
-
-        let reloadButton = NSButton(title: "重新加载", target: self, action: #selector(reloadConfig))
-        reloadButton.bezelStyle = .rounded
-        reloadButton.font = .systemFont(ofSize: 11)
-        reloadButton.frame = NSRect(x: PageUI.contentX + 138, y: 142, width: 130, height: 24)
-        addSubview(reloadButton)
-
-        let quitButton = NSButton(title: "退出 MyOwnTool", target: self, action: #selector(quit))
-        quitButton.bezelStyle = .rounded
-        quitButton.font = .systemFont(ofSize: 11)
-        quitButton.frame = NSRect(x: PageUI.contentX, y: 248, width: PageUI.contentWidth, height: 24)
-        addSubview(quitButton)
+        for (button, action) in [(axButton, #selector(openAX)),
+                                 (configButton, #selector(openConfig)),
+                                 (reloadButton, #selector(reloadConfig)),
+                                 (quitButton, #selector(quit))] {
+            button.target = self
+            button.action = action
+            button.bezelStyle = .rounded
+            button.font = .systemFont(ofSize: 11)
+            addSubview(button)
+        }
+        for (checkbox, action) in [(snapCheckbox, #selector(toggleSnap)),
+                                   (loginCheckbox, #selector(toggleLogin))] {
+            checkbox.target = self
+            checkbox.action = action
+            checkbox.font = .systemFont(ofSize: 12)
+            addSubview(checkbox)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 页面展示时同步当前状态
+    /// 页面展示时同步当前状态并重排（隐藏的控件不留空行）
     func onShow() {
         let trusted = actions.isTrusted()
         permissionValue.stringValue = trusted ? "已授权" : "未授权（分屏不可用）"
         permissionValue.textColor = trusted ? .systemGreen : .systemRed
         axButton.isHidden = trusted
         snapCheckbox.state = actions.isSnapEnabled() ? .on : .off
-        if let login = actions.loginItemState() {
-            loginCheckbox.isHidden = false
+        let login = actions.loginItemState()
+        loginCheckbox.isHidden = login == nil
+        if let login {
             loginCheckbox.state = login ? .on : .off
-        } else {
-            loginCheckbox.isHidden = true
         }
+        relayout()
+    }
+
+    private func relayout() {
+        var y: CGFloat = 12
+        permissionName.frame = NSRect(x: PageUI.contentX, y: y, width: 110, height: 15)
+        permissionValue.frame = NSRect(x: PageUI.contentX + 110, y: y,
+                                       width: PageUI.contentWidth - 110, height: 15)
+        y += 23
+        if !axButton.isHidden {
+            axButton.frame = NSRect(x: PageUI.contentX, y: y, width: 180, height: 24)
+            y += 30
+        }
+        snapCheckbox.frame = NSRect(x: PageUI.contentX, y: y, width: PageUI.contentWidth, height: 18)
+        y += 24
+        if !loginCheckbox.isHidden {
+            loginCheckbox.frame = NSRect(x: PageUI.contentX, y: y, width: PageUI.contentWidth, height: 18)
+            y += 24
+        }
+        y += 6
+        configButton.frame = NSRect(x: PageUI.contentX, y: y, width: 130, height: 24)
+        reloadButton.frame = NSRect(x: PageUI.contentX + 138, y: y, width: 130, height: 24)
+        y += 32
+        quitButton.frame = NSRect(x: PageUI.contentX, y: y, width: PageUI.contentWidth, height: 24)
     }
 
     @objc private func toggleSnap() { actions.setSnapEnabled(snapCheckbox.state == .on) }

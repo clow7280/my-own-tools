@@ -1,17 +1,20 @@
 import AppKit
 
-/// 菜单栏内容视图：左侧网速两行数字（上=上传 下=下载），右侧 CPU/GPU/RAM 三条迷你进度条。
+/// 菜单栏内容视图：左侧网速两行数字（上=上传 下=下载），
+/// 右侧 CPU/GPU/RAM 三条竖向进度条（从底向上，填充色=DESIGN.md 指标色）。
 /// CPU/GPU 条的描边颜色表示温度（绿 <60℃、橙 60~80℃、红 ≥80℃）。
 /// 固定总宽避免数字跳动引起菜单栏抖动；作为 button 子视图自动跟随菜单栏明暗。
+/// 横向进度条样式预留给将来的 AI 订阅用量段。
 final class StatsBarView: NSView {
-    // 布局常量：[边距][网速块][间距][进度条块][边距]；将来加 AI 用量段时在此扩展
+    // 布局常量：[边距][网速块][间距][竖条块][边距]；将来加 AI 用量段时在此扩展
     private static let margin: CGFloat = 4
     private static let speedWidth: CGFloat = 26
     private static let gap: CGFloat = 6
-    private static let barsWidth: CGFloat = 22
+    private static let barsWidth: CGFloat = barWidth * 3 + barGap * 2
     static let totalWidth: CGFloat = margin + speedWidth + gap + barsWidth + margin
 
-    private static let barHeight: CGFloat = 4
+    private static let barWidth: CGFloat = 4
+    private static let barHeight: CGFloat = 16
     private static let barGap: CGFloat = 2
 
     private var sample = StatsSample()
@@ -52,27 +55,28 @@ final class StatsBarView: NSView {
     // MARK: - 进度条
 
     private func drawBars() {
-        let x = Self.margin + Self.speedWidth + Self.gap
-        let totalHeight = Self.barHeight * 3 + Self.barGap * 2
-        var y = (bounds.height - totalHeight) / 2
+        var x = Self.margin + Self.speedWidth + Self.gap
+        let y = (bounds.height - Self.barHeight) / 2
 
-        drawBar(x: x, y: y, usage: sample.cpuUsage, stroke: Self.tempColor(sample.cpuTemp))
-        y += Self.barHeight + Self.barGap
-        drawBar(x: x, y: y, usage: sample.gpuUsage, stroke: Self.tempColor(sample.gpuTemp))
-        y += Self.barHeight + Self.barGap
-        drawBar(x: x, y: y, usage: sample.ramUsage, stroke: nil)
+        drawBar(x: x, y: y, usage: sample.cpuUsage, fill: StatsPalette.cpu, stroke: Self.tempColor(sample.cpuTemp))
+        x += Self.barWidth + Self.barGap
+        drawBar(x: x, y: y, usage: sample.gpuUsage, fill: StatsPalette.gpu, stroke: Self.tempColor(sample.gpuTemp))
+        x += Self.barWidth + Self.barGap
+        drawBar(x: x, y: y, usage: sample.ramUsage, fill: StatsPalette.ram, stroke: nil)
     }
 
-    private func drawBar(x: CGFloat, y: CGFloat, usage: Double, stroke: NSColor?) {
-        let track = NSRect(x: x, y: y, width: Self.barsWidth, height: Self.barHeight)
-        let radius = Self.barHeight / 2
+    /// 竖向进度条：从底向上填充（flipped 坐标系下即从 maxY 往上）
+    private func drawBar(x: CGFloat, y: CGFloat, usage: Double, fill: NSColor, stroke: NSColor?) {
+        let track = NSRect(x: x, y: y, width: Self.barWidth, height: Self.barHeight)
+        let radius = Self.barWidth / 2
 
-        NSColor.labelColor.withAlphaComponent(0.18).setFill()
+        NSColor.labelColor.withAlphaComponent(0.15).setFill()
         NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
 
-        let fillWidth = max(Self.barHeight, Self.barsWidth * min(max(usage, 0), 1))
-        NSColor.labelColor.withAlphaComponent(0.85).setFill()
-        NSBezierPath(roundedRect: NSRect(x: x, y: y, width: fillWidth, height: Self.barHeight),
+        let fillHeight = max(Self.barWidth, Self.barHeight * min(max(usage, 0), 1))
+        fill.setFill()
+        NSBezierPath(roundedRect: NSRect(x: x, y: track.maxY - fillHeight,
+                                         width: Self.barWidth, height: fillHeight),
                      xRadius: radius, yRadius: radius).fill()
 
         if let stroke {

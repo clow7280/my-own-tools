@@ -1,6 +1,6 @@
 import AppKit
 
-/// 点击菜单栏状态区弹出的详情窗：占用 / 温度 / 网络 / AI（预留）/ 分屏 五个选项卡。
+/// 点击菜单栏状态区弹出的详情窗：占用 / 温度 / 网络 / AI（预留）/ 应用设置 五个选项卡。
 /// 仿 Stats：无边框毛玻璃窗挂在菜单栏正下方。
 /// 失焦关闭三重保障：resignKey、全局鼠标按下监视器、应用失活通知——
 /// macOS 14+ 协作式激活下 accessory 应用的窗口可能始终成不了 key window，只靠 resignKey 不可靠。
@@ -33,7 +33,7 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         aiPage.addSubview(placeholder)
 
         pages = [usagePage, tempPage, netPage, aiPage, snapPage]
-        tabs = NSSegmentedControl(labels: ["占用", "温度", "网络", "AI", "分屏"],
+        tabs = NSSegmentedControl(labels: ["占用", "温度", "网络", "AI", "应用设置"],
                                   trackingMode: .selectOne, target: nil, action: nil)
         super.init()
 
