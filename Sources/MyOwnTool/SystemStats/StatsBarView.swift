@@ -15,9 +15,13 @@ final class StatsBarView: NSView {
 
     private static let barWidth: CGFloat = 4
     private static let barHeight: CGFloat = 16
-    private static let barGap: CGFloat = 2
+    private static let barGap: CGFloat = 4
+
+    /// 单次采样间变化量超过该值时，该条提亮一拍以突出突发活动
+    private static let highlightDelta = 0.3
 
     private var sample = StatsSample()
+    private var previous = StatsSample()
 
     override var isFlipped: Bool { true }
 
@@ -25,6 +29,7 @@ final class StatsBarView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     func update(_ sample: StatsSample) {
+        previous = self.sample
         self.sample = sample
         needsDisplay = true
     }
@@ -58,15 +63,22 @@ final class StatsBarView: NSView {
         var x = Self.margin + Self.speedWidth + Self.gap
         let y = (bounds.height - Self.barHeight) / 2
 
-        drawBar(x: x, y: y, usage: sample.cpuUsage, fill: StatsPalette.cpu, stroke: Self.tempColor(sample.cpuTemp))
+        drawBar(x: x, y: y, usage: sample.cpuUsage, fill: StatsPalette.cpu,
+                stroke: Self.tempColor(sample.cpuTemp),
+                highlight: abs(sample.cpuUsage - previous.cpuUsage) > Self.highlightDelta)
         x += Self.barWidth + Self.barGap
-        drawBar(x: x, y: y, usage: sample.gpuUsage, fill: StatsPalette.gpu, stroke: Self.tempColor(sample.gpuTemp))
+        drawBar(x: x, y: y, usage: sample.gpuUsage, fill: StatsPalette.gpu,
+                stroke: Self.tempColor(sample.gpuTemp),
+                highlight: abs(sample.gpuUsage - previous.gpuUsage) > Self.highlightDelta)
         x += Self.barWidth + Self.barGap
-        drawBar(x: x, y: y, usage: sample.ramUsage, fill: StatsPalette.ram, stroke: nil)
+        drawBar(x: x, y: y, usage: sample.ramUsage, fill: StatsPalette.ram, stroke: nil,
+                highlight: abs(sample.ramUsage - previous.ramUsage) > Self.highlightDelta)
     }
 
-    /// 竖向进度条：从底向上填充（flipped 坐标系下即从 maxY 往上）
-    private func drawBar(x: CGFloat, y: CGFloat, usage: Double, fill: NSColor, stroke: NSColor?) {
+    /// 竖向进度条：从底向上填充（flipped 坐标系下即从 maxY 往上）；
+    /// highlight 时填充提亮一档，下一拍变化回落后自然恢复
+    private func drawBar(x: CGFloat, y: CGFloat, usage: Double, fill: NSColor,
+                         stroke: NSColor?, highlight: Bool) {
         let track = NSRect(x: x, y: y, width: Self.barWidth, height: Self.barHeight)
         let radius = Self.barWidth / 2
 
@@ -74,25 +86,27 @@ final class StatsBarView: NSView {
         NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
 
         let fillHeight = max(Self.barWidth, Self.barHeight * min(max(usage, 0), 1))
-        fill.setFill()
+        let fillColor = highlight ? (fill.blended(withFraction: 0.4, of: .white) ?? fill) : fill
+        fillColor.setFill()
         NSBezierPath(roundedRect: NSRect(x: x, y: track.maxY - fillHeight,
                                          width: Self.barWidth, height: fillHeight),
                      xRadius: radius, yRadius: radius).fill()
 
+        // 描边保持比填充暗淡（alpha 压低），不与填充争夺注意力
         if let stroke {
-            stroke.setStroke()
-            let path = NSBezierPath(roundedRect: track.insetBy(dx: -0.75, dy: -0.75),
-                                    xRadius: radius + 0.75, yRadius: radius + 0.75)
+            stroke.withAlphaComponent(0.7).setStroke()
+            let path = NSBezierPath(roundedRect: track.insetBy(dx: -1, dy: -1),
+                                    xRadius: radius + 1, yRadius: radius + 1)
             path.lineWidth = 1
             path.stroke()
         }
     }
 
-    /// 温度 → 描边色；无温度数据时不描边
+    /// 温度 → 警示描边色；常温（<60℃）与无数据时不描边，保持安静
     static func tempColor(_ temp: Double?) -> NSColor? {
         guard let temp else { return nil }
         switch temp {
-        case ..<60: return .systemGreen
+        case ..<60: return nil
         case ..<80: return .systemOrange
         default: return .systemRed
         }
