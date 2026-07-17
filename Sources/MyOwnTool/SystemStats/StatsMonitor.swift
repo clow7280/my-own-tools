@@ -138,7 +138,7 @@ final class StatsMonitor {
             gpuTempKeys = []
             diskTempKeys = []
             batteryTempKeys = []
-            NSLog("MyOwnTool: SMC 连接失败，温度显示不可用")
+            NSLog("MyOwnTools: SMC 连接失败，温度显示不可用")
             return
         }
         // Tp=P核 Te=E核 Tf=M3 系 CPU 簇；Tg=GPU；TH=硬盘/NAND；TB*T=电池。
@@ -152,7 +152,7 @@ final class StatsMonitor {
         gpuTempKeys = keys.filter { $0.hasPrefix("Tg") && plausible($0) }
         diskTempKeys = keys.filter { $0.hasPrefix("TH") && plausible($0) }
         batteryTempKeys = keys.filter { $0.hasPrefix("TB") && $0.hasSuffix("T") && plausible($0) }
-        NSLog("MyOwnTool: SMC 温度键 CPU=%d GPU=%d 硬盘=%d 电池=%d",
+        NSLog("MyOwnTools: SMC 温度键 CPU=%d GPU=%d 硬盘=%d 电池=%d",
               cpuTempKeys?.count ?? 0, gpuTempKeys?.count ?? 0,
               diskTempKeys?.count ?? 0, batteryTempKeys?.count ?? 0)
     }

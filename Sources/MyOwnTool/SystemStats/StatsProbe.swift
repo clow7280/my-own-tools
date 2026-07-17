@@ -4,7 +4,7 @@ import Foundation
 /// 不启动 GUI，直接验证全部数据通路（CPU/GPU/RAM/网速/SMC 温度），打印结果后退出
 enum StatsProbe {
     static func run() -> Never {
-        print("== myowntool 系统状态探针 ==")
+        print("== MyOwnTools 系统状态探针 ==")
         let cpu = CPUSampler()
         let memory = MemorySampler()
         let gpu = GPUSampler()
@@ -90,7 +90,7 @@ enum StatsProbe {
 /// AI 用量探针：`MyOwnTools --ai-probe`，验证 Claude/Codex 凭证读取与端点解析
 enum AIProbe {
     static func run() -> Never {
-        print("== myowntool AI 用量探针 ==")
+        print("== MyOwnTools AI 用量探针 ==")
         let group = DispatchGroup()
         // 凭证读取（含 Keychain）放后台，避免弹窗阻塞主线程，主线程照常泵 runloop
         group.enter()

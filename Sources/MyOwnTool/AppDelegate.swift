@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatsItem() {
         let item = NSStatusBar.system.statusItem(withLength: StatsBarView.totalWidth)
-        item.autosaveName = "MyOwnTool.SystemStats"
+        item.autosaveName = "MyOwnTools.SystemStats"
         if let button = item.button {
             let view = StatsBarView(frame: NSRect(x: 0, y: 0,
                                                   width: StatsBarView.totalWidth,
@@ -115,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         try SMAppService.mainApp.unregister()
                     }
                 } catch {
-                    NSLog("MyOwnTool: 切换开机自启失败：\(error.localizedDescription)")
+                    NSLog("MyOwnTools: 切换开机自启失败：\(error.localizedDescription)")
                 }
             },
             openConfig: {
@@ -144,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try process.run()
         } catch {
-            NSLog("MyOwnTool: 重启失败：\(error.localizedDescription)")
+            NSLog("MyOwnTools: 重启失败：\(error.localizedDescription)")
             return
         }
         NSApp.terminate(nil)

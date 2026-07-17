@@ -1,8 +1,8 @@
-# MyOwnTool 视觉设计规范
+# MyOwnTools 视觉设计规范
 
 代码对应物：`Sources/MyOwnTool/SystemStats/StatsPalette.swift`。
 改动调色板时**先改本文档再改代码**。
-2026-07-18 起本规范以 Claude Design 设计稿《MyOwnTool 设计稿》为源。
+2026-07-18 起本规范以 Claude Design 设计稿《MyOwnTools 设计稿》为源。
 
 ## 设计原则
 

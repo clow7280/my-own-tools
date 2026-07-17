@@ -1,6 +1,7 @@
-# MyOwnTool
+# MyOwnTools
 
-MyOwnTool 是一个个人 macOS 菜单栏工具，用来查看系统状态和 AI 订阅用量，也可以快速整理窗口。
+MyOwnTools 是一个个人 macOS 菜单栏工具，用来查看系统状态和 AI 订阅用量，也可以快速整理窗口。
+当前版本为 `0.1.0`。
 
 ## 功能
 

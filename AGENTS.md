@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-MyOwnTool 是面向 macOS 13 及以上版本的个人菜单栏应用。
+MyOwnTools 是面向 macOS 13 及以上版本的个人菜单栏应用。
 项目使用 Swift 5.9、Swift Package Manager 和 AppKit，不依赖第三方库，不使用 Storyboard 或 XIB。
 应用以 accessory 模式运行，提供 Shift 拖拽窗口吸附，以及 CPU、GPU、内存、网络和 AI 用量展示。
 

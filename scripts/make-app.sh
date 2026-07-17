@@ -9,11 +9,12 @@ SIGN_IDENTITY="${CODESIGN_IDENTITY:-MyOwnToolSigning}"
 
 swift build -c release
 
-APP="build/MyOwnTool.app"
-rm -rf "$APP"
+APP="build/MyOwnTools.app"
+LEGACY_APP="build/MyOwnTool.app"
+rm -rf "$APP" "$LEGACY_APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp .build/release/MyOwnTools "$APP/Contents/MacOS/MyOwnTool"
+cp .build/release/MyOwnTools "$APP/Contents/MacOS/MyOwnTools"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -21,10 +22,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>MyOwnTool</string>
+    <key>CFBundleExecutable</key><string>MyOwnTools</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>CFBundleIdentifier</key><string>com.clow.myowntool</string>
-    <key>CFBundleName</key><string>MyOwnTool</string>
+    <key>CFBundleIdentifier</key><string>com.clow.myowntools</string>
+    <key>CFBundleName</key><string>MyOwnTools</string>
+    <key>CFBundleDisplayName</key><string>MyOwnTools</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
@@ -35,5 +37,5 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign "$SIGN_IDENTITY" --identifier com.clow.myowntool "$APP"
+codesign --force --sign "$SIGN_IDENTITY" --identifier com.clow.myowntools "$APP"
 echo "已生成 $APP（签名身份：$SIGN_IDENTITY），可拖入「应用程序」并设为登录启动项。"
