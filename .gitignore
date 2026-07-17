@@ -3,7 +3,7 @@
 .claude/
 .codex/
 .cursor/
-.code/
+.vscode/
 .idea/
 
 # OS generated files
