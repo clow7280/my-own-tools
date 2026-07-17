@@ -1,25 +1,28 @@
 import AppKit
 
-/// 系统状态监视器：后台队列每秒采样一次，主线程回调；保留最近 5 分钟历史。
+/// 系统状态监视器：后台队列每秒采样一次，主线程回调；保留最近 1 分钟历史。
 /// 用 DispatchSourceTimer 而非 Timer，不受菜单/事件追踪 runloop mode 影响；系统睡眠时暂停。
 final class StatsMonitor {
-    /// 1 秒 × 60 条历史；弹窗曲线取尾部 30 秒切片
+    /// 1 秒 × 60 条历史；弹窗 sparkline 显示完整 1 分钟窗口
     static let historyCapacity = 60
     static let sampleInterval: TimeInterval = 1
 
     private let cpu = CPUSampler()
     private let memory = MemorySampler()
     private let gpu = GPUSampler()
+    private let disk = DiskSampler()
     private let network = NetworkSampler()
 
     private let queue = DispatchQueue(label: "myowntool.stats", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var suspended = false
 
-    // 以下三个仅在 queue 上访问：SMC 连接与懒发现的温度键
+    // 以下仅在 queue 上访问：SMC 连接与懒发现的温度键
     private var smc: SMCReader?
     private var cpuTempKeys: [String]?
     private var gpuTempKeys: [String]?
+    private var diskTempKeys: [String]?
+    private var batteryTempKeys: [String]?
 
     /// 主线程访问：最近的采样历史（含最新一条）
     private(set) var history: [StatsSample] = []
@@ -62,6 +65,8 @@ final class StatsMonitor {
         // 唤醒后清掉差分基准，避免把睡眠期间的累计量算成一秒内的速率
         queue.async { [weak self] in
             _ = self?.cpu.sample()
+            _ = self?.cpu.sampleClusters()
+            _ = self?.disk.sample()
             _ = self?.network.sample()
         }
         timer.resume()
@@ -73,22 +78,46 @@ final class StatsMonitor {
     private func tick() {
         var sample = StatsSample()
         if let usage = cpu.sample() { sample.cpuUsage = usage }
-        if let (used, usage) = memory.sample() {
-            sample.ramUsed = used
-            sample.ramUsage = usage
+        if let clusters = cpu.sampleClusters() {
+            sample.cpuECore = clusters.e
+            sample.cpuPCore = clusters.p
+        }
+        sample.loadAvg = CPUSampler.loadAverages()
+        if let mem = memory.sample() {
+            sample.ramUsed = mem.used
+            sample.ramUsage = mem.usage
+            sample.ramApp = mem.app
+            sample.ramWired = mem.wired
+            sample.swapUsed = mem.swap
         }
         sample.ramTotal = memory.total
         let gpuResult = gpu.sample()
         if let usage = gpuResult.usage { sample.gpuUsage = usage }
+        (sample.diskRead, sample.diskWrite, sample.diskReadTotal, sample.diskWriteTotal) = disk.sample()
         (sample.netUp, sample.netDown) = network.sample()
 
-        // 温度：CPU 走 SMC（M5 键为 Tp**）；GPU 优先取 IOAccelerator 自带值，缺失时走 SMC Tg**
+        // 温度：CPU 走 SMC（M5 键为 Tp**）；GPU 优先取 IOAccelerator 自带值，缺失时走 SMC Tg**；
+        // 硬盘（NAND TH**）与电池（TB*T）用于弹窗温度卡和 RAM 柱边框
         setupSMCIfNeeded()
         if let smc {
-            sample.cpuTemp = cpuTempKeys.flatMap { smc.averageTemperature($0) }
-            sample.gpuTemp = gpuResult.temp ?? gpuTempKeys.flatMap { smc.averageTemperature($0) }
-        } else {
-            sample.gpuTemp = gpuResult.temp
+            let cpuTemps = smc.temperatures(cpuTempKeys ?? [])
+            if !cpuTemps.isEmpty {
+                sample.cpuTemp = cpuTemps.reduce(0, +) / Double(cpuTemps.count)
+                sample.cpuTempMax = cpuTemps.max()
+            }
+            let gpuTemps = smc.temperatures(gpuTempKeys ?? [])
+            if !gpuTemps.isEmpty {
+                sample.gpuTemp = gpuTemps.reduce(0, +) / Double(gpuTemps.count)
+                sample.gpuTempMax = gpuTemps.max()
+            } else if let temp = gpuResult.temp {
+                sample.gpuTemp = temp
+                sample.gpuTempMax = temp
+            }
+            sample.diskTemp = smc.averageTemperature(diskTempKeys ?? [])
+            sample.batteryTemp = smc.averageTemperature(batteryTempKeys ?? [])
+        } else if let temp = gpuResult.temp {
+            sample.gpuTemp = temp
+            sample.gpuTempMax = temp
         }
 
         DispatchQueue.main.async {
@@ -107,10 +136,13 @@ final class StatsMonitor {
         guard let smc else {
             cpuTempKeys = []
             gpuTempKeys = []
+            diskTempKeys = []
+            batteryTempKeys = []
             NSLog("MyOwnTool: SMC 连接失败，温度显示不可用")
             return
         }
-        // Tp=P核 Te=E核 Tf=M3 系 CPU 簇；Tg=GPU。枚举过滤比按芯片代硬编码更通用
+        // Tp=P核 Te=E核 Tf=M3 系 CPU 簇；Tg=GPU；TH=硬盘/NAND；TB*T=电池。
+        // 枚举过滤比按芯片代硬编码更通用；只枚举一次全部键
         let keys = smc.allKeys()
         func plausible(_ key: String) -> Bool {
             guard let v = smc.double(key) else { return false }
@@ -118,6 +150,10 @@ final class StatsMonitor {
         }
         cpuTempKeys = keys.filter { ["Tp", "Te", "Tf"].contains(where: $0.hasPrefix) && plausible($0) }
         gpuTempKeys = keys.filter { $0.hasPrefix("Tg") && plausible($0) }
-        NSLog("MyOwnTool: SMC 温度键 CPU=%d 个 GPU=%d 个", cpuTempKeys?.count ?? 0, gpuTempKeys?.count ?? 0)
+        diskTempKeys = keys.filter { $0.hasPrefix("TH") && plausible($0) }
+        batteryTempKeys = keys.filter { $0.hasPrefix("TB") && $0.hasSuffix("T") && plausible($0) }
+        NSLog("MyOwnTool: SMC 温度键 CPU=%d GPU=%d 硬盘=%d 电池=%d",
+              cpuTempKeys?.count ?? 0, gpuTempKeys?.count ?? 0,
+              diskTempKeys?.count ?? 0, batteryTempKeys?.count ?? 0)
     }
 }

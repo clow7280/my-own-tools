@@ -5,7 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let snapController = SnapController()
     private var permissionTimer: Timer?
 
-    // 唯一的菜单栏项：系统状态区（网速 + CPU/GPU/RAM 进度条），点击弹详情窗
+    // 唯一的菜单栏项：系统状态区（网速 + 竖柱 + AI 用量环），点击弹详情窗
     private var statsItem: NSStatusItem?
     private var statsBarView: StatsBarView?
     private var statsPopup: StatsPopupController?
@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LayoutStore.load()
+        LayoutStore.startWatching()
         setupStatsItem()
 
         // 登录项记录的是注册时的应用路径；若 .app 被移动过，
@@ -66,9 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         aiMonitor.onUpdate = { [weak self] in
             guard let self else { return }
-            self.statsBarView?.updateAIUsage(openAI: self.aiMonitor.codex.barValue,
-                                             claude: self.aiMonitor.claude.barValue,
-                                             gemini: self.aiMonitor.gemini.barValue)
+            self.statsBarView?.updateAIUsage(chatGPT: self.aiMonitor.chatGPT,
+                                             claude: self.aiMonitor.claude)
             self.statsPopup?.refreshAI()
         }
         aiMonitor.start()
@@ -77,18 +77,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleStatsPopup() {
         guard let button = statsItem?.button else { return }
         if statsPopup == nil {
-            statsPopup = StatsPopupController(snapActions: makeSnapActions(), aiUsages: { [aiMonitor] in
-                [("Codex", StatsPalette.openAI, aiMonitor.codex),
-                 ("Claude", StatsPalette.claude, aiMonitor.claude),
-                 ("Gemini", StatsPalette.gemini, aiMonitor.gemini)]
-            })
+            statsPopup = StatsPopupController(settingsActions: makeSettingsActions(),
+                                              aiProviders: makeAIProviders())
         }
         statsPopup?.toggle(relativeTo: button, history: statsMonitor.history)
     }
 
-    /// 分屏页所需的状态与动作（原菜单栏菜单的全部功能）
-    private func makeSnapActions() -> SnapPageActions {
-        SnapPageActions(
+    /// AI 页两家提供方的数据源与单家刷新动作
+    private func makeAIProviders() -> [AIProviderSpec] {
+        [
+            AIProviderSpec(kind: .chatGPT, name: "ChatGPT",
+                           usage: { [aiMonitor] in aiMonitor.chatGPT },
+                           updatedAt: { [aiMonitor] in aiMonitor.chatGPTUpdatedAt },
+                           refresh: { [aiMonitor] in aiMonitor.refresh(.chatGPT) }),
+            AIProviderSpec(kind: .claude, name: "Claude",
+                           usage: { [aiMonitor] in aiMonitor.claude },
+                           updatedAt: { [aiMonitor] in aiMonitor.claudeUpdatedAt },
+                           refresh: { [aiMonitor] in aiMonitor.refresh(.claude) }),
+        ]
+    }
+
+    /// 设置页所需的状态与动作
+    private func makeSettingsActions() -> SettingsActions {
+        SettingsActions(
             isTrusted: { Permissions.trusted },
             isSnapEnabled: { [weak self] in self?.snapController.isEnabled ?? false },
             setSnapEnabled: { [weak self] in self?.snapController.isEnabled = $0 },
@@ -109,11 +120,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             openConfig: {
                 LayoutStore.writeDefaultIfMissing()
+                LayoutStore.startWatching()     // 目录可能刚创建，补挂监视
                 NSWorkspace.shared.open(LayoutStore.configURL)
             },
-            reloadConfig: { LayoutStore.load() },
             openAXSettings: { Permissions.openAccessibilitySettings() },
+            lastLayoutLoad: { LayoutStore.lastLoaded },
+            restart: { [weak self] in self?.relaunch() },
             quit: { NSApp.terminate(nil) }
         )
+    }
+
+    /// 重启：先拉起新实例再退出自身；.app 用 open -n，裸二进制直接再执行一次
+    private func relaunch() {
+        let process = Process()
+        if isRunningFromBundle {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = ["-n", Bundle.main.bundlePath]
+        } else if let executable = Bundle.main.executableURL {
+            process.executableURL = executable
+        } else {
+            return
+        }
+        do {
+            try process.run()
+        } catch {
+            NSLog("MyOwnTool: 重启失败：\(error.localizedDescription)")
+            return
+        }
+        NSApp.terminate(nil)
     }
 }

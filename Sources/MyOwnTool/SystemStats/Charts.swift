@@ -1,19 +1,23 @@
 import AppKit
 
-/// 简单的多系列面积折线图：数据右对齐（最新值贴右边），不足 capacity 时左侧留白
-final class LineChartView: NSView {
+/// 极简折线 sparkline：无背景无面积填充，数据右对齐（最新值贴右缘），
+/// 不足容量时左侧留白。支持多系列叠画（网络卡片的下载/上传双线），系列共用量程。
+final class SparklineView: NSView {
     struct Series {
         var values: [Double]
         var color: NSColor
+        var lineWidth: CGFloat = 1.5
+    }
+
+    /// 纵轴量程
+    enum Scale {
+        case fixed(max: Double)         // 0~max（占用率）
+        case autoMax(floor: Double)     // 0~峰值（速率类），floor 防微小波动被放大
+        case band(padding: Double)      // 数据 min−p ~ max+p（温度，突出相对变化）
     }
 
     let capacity: Int
-    /// 纵轴最大值；nil 表示按数据峰值自动缩放
-    var fixedMax: Double? = 1
-    /// 自动量程时的最小上限，防止微小波动被放大
-    var autoMaxFloor: Double = 0
-    /// 自动量程时右上角的峰值标注文本
-    var peakFormatter: ((Double) -> String)?
+    var scale: Scale = .fixed(max: 1)
 
     private var series: [Series] = []
 
@@ -30,13 +34,22 @@ final class LineChartView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(0.06).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
         guard capacity > 1, series.contains(where: { !$0.values.isEmpty }) else { return }
 
-        let peak = series.flatMap(\.values).max() ?? 0
-        let maxValue = fixedMax ?? max(peak, autoMaxFloor, 1e-9)
-        let rect = bounds.insetBy(dx: 3, dy: 3)
+        let all = series.flatMap { $0.values.suffix(capacity) }
+        let (low, high): (Double, Double)
+        switch scale {
+        case .fixed(let max):
+            (low, high) = (0, max)
+        case .autoMax(let floor):
+            (low, high) = (0, Swift.max(all.max() ?? 0, floor))
+        case .band(let padding):
+            let lo = (all.min() ?? 0) - padding
+            let hi = (all.max() ?? 0) + padding
+            (low, high) = (lo, Swift.max(hi, lo + 1e-9))
+        }
+        let range = Swift.max(high - low, 1e-9)
+        let rect = bounds.insetBy(dx: 1, dy: 1.5)
 
         for s in series where !s.values.isEmpty {
             let values = s.values.suffix(capacity)
@@ -44,136 +57,17 @@ final class LineChartView: NSView {
             var points: [NSPoint] = []
             for (i, v) in values.enumerated() {
                 let x = rect.minX + rect.width * CGFloat(startSlot + i) / CGFloat(capacity - 1)
-                let y = rect.minY + rect.height * CGFloat(min(max(v / maxValue, 0), 1))
+                let y = rect.minY + rect.height * CGFloat(min(max((v - low) / range, 0), 1))
                 points.append(NSPoint(x: x, y: y))
             }
-
             let line = NSBezierPath()
             line.move(to: points[0])
             points.dropFirst().forEach { line.line(to: $0) }
-            s.color.withAlphaComponent(0.9).setStroke()
-            line.lineWidth = 1.5
+            s.color.setStroke()
+            line.lineWidth = s.lineWidth
             line.lineJoinStyle = .round
+            line.lineCapStyle = .round
             line.stroke()
-
-            if points.count > 1 {
-                let area = line.copy() as! NSBezierPath
-                area.line(to: NSPoint(x: points[points.count - 1].x, y: rect.minY))
-                area.line(to: NSPoint(x: points[0].x, y: rect.minY))
-                area.close()
-                s.color.withAlphaComponent(0.15).setFill()
-                area.fill()
-            }
         }
-
-        if fixedMax == nil, let text = peakFormatter?(max(peak, autoMaxFloor)) {
-            Charts.drawCaption(text, at: NSPoint(x: bounds.maxX - 6, y: bounds.maxY - 4),
-                               anchor: .topRight, in: bounds)
-        }
-    }
-}
-
-/// 上下镜像面积图（仿 Stats 网络负载历史）：中线以上为上传、以下为下载，
-/// 两半各自独立量程，峰值分别标注在左上/左下角
-final class MirrorChartView: NSView {
-    let capacity: Int
-    var upColor = NSColor.systemRed
-    var downColor = NSColor.systemBlue
-    /// 每半边自动量程的最小上限
-    var autoMaxFloor: Double = 50_000
-
-    private var up: [Double] = []
-    private var down: [Double] = []
-
-    init(capacity: Int) {
-        self.capacity = capacity
-        super.init(frame: .zero)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    func update(up: [Double], down: [Double]) {
-        self.up = up
-        self.down = down
-        needsDisplay = true
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(0.06).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
-        guard capacity > 1 else { return }
-
-        let rect = bounds.insetBy(dx: 3, dy: 3)
-        let midY = rect.midY
-
-        // 中线
-        NSColor.labelColor.withAlphaComponent(0.25).setStroke()
-        let mid = NSBezierPath()
-        mid.move(to: NSPoint(x: rect.minX, y: midY))
-        mid.line(to: NSPoint(x: rect.maxX, y: midY))
-        mid.lineWidth = 1
-        mid.stroke()
-
-        let halfHeight = rect.height / 2 - 1
-        drawHalf(up, color: upColor, rect: rect, midY: midY, halfHeight: halfHeight, upward: true)
-        drawHalf(down, color: downColor, rect: rect, midY: midY, halfHeight: halfHeight, upward: false)
-
-        let upPeak = max(up.suffix(capacity).max() ?? 0, autoMaxFloor)
-        let downPeak = max(down.suffix(capacity).max() ?? 0, autoMaxFloor)
-        Charts.drawCaption("\(StatsFormat.speed(upPeak))/s",
-                           at: NSPoint(x: bounds.minX + 6, y: bounds.maxY - 4), anchor: .topLeft, in: bounds)
-        Charts.drawCaption("\(StatsFormat.speed(downPeak))/s",
-                           at: NSPoint(x: bounds.minX + 6, y: bounds.minY + 4), anchor: .bottomLeft, in: bounds)
-    }
-
-    private func drawHalf(_ values: [Double], color: NSColor, rect: NSRect,
-                          midY: CGFloat, halfHeight: CGFloat, upward: Bool) {
-        let window = values.suffix(capacity)
-        guard !window.isEmpty else { return }
-        let maxValue = max(window.max() ?? 0, autoMaxFloor, 1e-9)
-        let startSlot = capacity - window.count
-        let sign: CGFloat = upward ? 1 : -1
-
-        var points: [NSPoint] = []
-        for (i, v) in window.enumerated() {
-            let x = rect.minX + rect.width * CGFloat(startSlot + i) / CGFloat(capacity - 1)
-            let y = midY + sign * halfHeight * CGFloat(min(max(v / maxValue, 0), 1))
-            points.append(NSPoint(x: x, y: y))
-        }
-
-        let line = NSBezierPath()
-        line.move(to: points[0])
-        points.dropFirst().forEach { line.line(to: $0) }
-        color.withAlphaComponent(0.9).setStroke()
-        line.lineWidth = 1
-        line.stroke()
-
-        let area = line.copy() as! NSBezierPath
-        area.line(to: NSPoint(x: points[points.count - 1].x, y: midY))
-        area.line(to: NSPoint(x: points[0].x, y: midY))
-        area.close()
-        color.withAlphaComponent(0.25).setFill()
-        area.fill()
-    }
-}
-
-/// 图表内小字标注的共用绘制
-enum Charts {
-    enum Anchor { case topLeft, topRight, bottomLeft }
-
-    static func drawCaption(_ text: String, at point: NSPoint, anchor: Anchor, in bounds: NSRect) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        let label = NSAttributedString(string: text, attributes: attrs)
-        let size = label.size()
-        var origin: NSPoint
-        switch anchor {
-        case .topLeft: origin = NSPoint(x: point.x, y: point.y - size.height)
-        case .topRight: origin = NSPoint(x: point.x - size.width, y: point.y - size.height)
-        case .bottomLeft: origin = NSPoint(x: point.x, y: point.y)
-        }
-        label.draw(at: origin)
     }
 }

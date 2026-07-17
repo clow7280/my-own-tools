@@ -45,16 +45,15 @@ enum RouteInfo {
     }
 }
 
-/// 国内外出口公网 IP：国内经 cip.cc、国外经 ip.im/info（均需 curl UA 才返回纯文本）。
+/// 出口公网 IP：单端点 cip.cc（需 curl UA 才返回纯文本）。
 /// 成功缓存 5 分钟，失败 30 秒后允许重试；回调在主线程。
 final class PublicIPFetcher {
     struct Result {
         var ip: String
-        var note: String?   // 国内为运营商，国外为国家代码
+        var note: String?   // 运营商
     }
 
-    private(set) var domestic: Result?
-    private(set) var foreign: Result?
+    private(set) var current: Result?
 
     private var lastFetch: Date?
     private var inFlight = false
@@ -67,27 +66,20 @@ final class PublicIPFetcher {
 
     func refreshIfStale(completion: @escaping () -> Void) {
         if let lastFetch {
-            let ttl: TimeInterval = (domestic == nil || foreign == nil) ? 30 : 300
+            let ttl: TimeInterval = current == nil ? 30 : 300
             if Date().timeIntervalSince(lastFetch) < ttl { return }
         }
         guard !inFlight else { return }
         inFlight = true
 
-        let group = DispatchGroup()
-        group.enter()
         fetch("https://cip.cc") { [weak self] text in
-            self?.domestic = Self.parseCip(text)
-            group.leave()
-        }
-        group.enter()
-        fetch("https://ip.im/info") { [weak self] text in
-            self?.foreign = Self.parseIpIm(text)
-            group.leave()
-        }
-        group.notify(queue: .main) { [weak self] in
-            self?.inFlight = false
-            self?.lastFetch = Date()
-            completion()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.current = Self.parseCip(text) ?? self.current
+                self.inFlight = false
+                self.lastFetch = Date()
+                completion()
+            }
         }
     }
 
@@ -103,13 +95,6 @@ final class PublicIPFetcher {
         guard let fields = keyValues(text) else { return nil }
         guard let ip = fields["IP"] else { return nil }
         return Result(ip: ip, note: fields["运营商"])
-    }
-
-    /// ip.im/info 纯文本格式："Ip:x.x.x.x" / "Country:US"（前面有 ASCII art 横幅）
-    static func parseIpIm(_ text: String?) -> Result? {
-        guard let fields = keyValues(text) else { return nil }
-        guard let ip = fields["Ip"] else { return nil }
-        return Result(ip: ip, note: fields["Country"])
     }
 
     private static func keyValues(_ text: String?) -> [String: String]? {

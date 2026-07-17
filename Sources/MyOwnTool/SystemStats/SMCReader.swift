@@ -115,12 +115,17 @@ final class SMCReader {
         }
     }
 
-    /// 一组键的平均温度（逐键读取，忽略掉线或失真的读数）
-    func averageTemperature(_ keys: [String]) -> Double? {
-        let values = keys.compactMap { key -> Double? in
+    /// 一组键的即时读数（逐键读取，忽略掉线或失真的值）
+    func temperatures(_ keys: [String]) -> [Double] {
+        keys.compactMap { key in
             guard let v = double(key), v > 1, v < 125 else { return nil }
             return v
         }
+    }
+
+    /// 一组键的平均温度
+    func averageTemperature(_ keys: [String]) -> Double? {
+        let values = temperatures(keys)
         guard !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)
     }

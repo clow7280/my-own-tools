@@ -9,16 +9,29 @@ struct AIUsage {
         var resetsAt: Date?
     }
 
-    var fiveHour: Double?       // 5 小时滚动窗
+    var fiveHour: Double?       // 5 小时滚动窗；nil 且有 7d 数据 = 限额暂时取消
     var sevenDay: Double?       // 7 天窗
     var fiveHourResetsAt: Date?
     var sevenDayResetsAt: Date?
     var models: [Model] = []
-    var plan: String?
+    var plan: String?           // 订阅计划原始值（pro / max…）
     var error: String?         // 读取失败时的原因（供 AI 页显示）
 
-    /// 菜单栏横条取值：优先 5h，无 5h 时退回 7d
-    var barValue: Double? { fiveHour ?? sevenDay }
+    /// 订阅计划原始值 → 徽章文本（"pro"→"Pro"，"max…20x"→"Max 20×"）
+    static func planBadge(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        let lower = raw.lowercased()
+        if lower.contains("max") {
+            if lower.contains("20") { return "Max 20×" }
+            if lower.contains("5") { return "Max 5×" }
+            return "Max"
+        }
+        if lower.contains("enterprise") { return "Enterprise" }
+        if lower.contains("team") { return "Team" }
+        if lower.contains("plus") { return "Plus" }
+        if lower.contains("pro") { return "Pro" }
+        return raw.prefix(1).uppercased() + raw.dropFirst()
+    }
 }
 
 // MARK: - Claude
@@ -27,11 +40,11 @@ struct AIUsage {
 /// 见 memory `ai-usage-endpoints`。
 enum ClaudeUsageReader {
     static func fetch(_ completion: @escaping (AIUsage) -> Void) {
-        guard let token = accessToken() else {
+        guard let creds = credentials() else {
             return completion(AIUsage(error: "未找到 Claude 凭证"))
         }
         var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         req.setValue("claude-code/1.0.0", forHTTPHeaderField: "User-Agent")  // 必须，否则严格限流
         req.timeoutInterval = 15
@@ -42,7 +55,9 @@ enum ClaudeUsageReader {
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return completion(AIUsage(error: code == 401 ? "Claude token 已过期" : "Claude 请求失败(\(code))"))
             }
-            completion(parse(json))
+            var usage = parse(json)
+            usage.plan = creds.plan     // 用量端点不带计划，取凭证里的 subscriptionType
+            completion(usage)
         }.resume()
     }
 
@@ -69,10 +84,10 @@ enum ClaudeUsageReader {
         return usage
     }
 
-    /// 读 Claude Code 的 OAuth 凭证 JSON。
+    /// 读 Claude Code 的 OAuth 凭证 JSON（token + 订阅计划）。
     /// 优先用 `security` 子进程读 Keychain（Keychain 视调用方为受信的 security，
     /// 绕开"自签名 app 读他人 Keychain 项反复弹框"的坑）；失败再退回文件。
-    private static func accessToken() -> String? {
+    private static func credentials() -> (token: String, plan: String?)? {
         var data = securityRead(service: "Claude Code-credentials")
         if data == nil {
             let path = ("~/.claude/.credentials.json" as NSString).expandingTildeInPath
@@ -80,8 +95,9 @@ enum ClaudeUsageReader {
         }
         guard let data,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = json["claudeAiOauth"] as? [String: Any] else { return nil }
-        return oauth["accessToken"] as? String
+              let oauth = json["claudeAiOauth"] as? [String: Any],
+              let token = oauth["accessToken"] as? String else { return nil }
+        return (token, oauth["subscriptionType"] as? String)
     }
 
     /// `/usr/bin/security find-generic-password -s <service> -w`，带硬超时避免卡死

@@ -1,33 +1,34 @@
 import AppKit
 
-/// 点击菜单栏状态区弹出的详情窗：占用 / 温度 / 网络 / AI（预留）/ 设置 五个选项卡。
-/// 仿 Stats：无边框毛玻璃窗挂在菜单栏正下方。
+/// 点击菜单栏状态区弹出的详情窗：系统 / AI / 设置三个选项卡。
+/// 仿 Stats：无边框毛玻璃窗挂在菜单栏正下方；宽 348pt 固定，高度随选项卡内容变化。
 /// 失焦关闭三重保障：resignKey、全局鼠标按下监视器、应用失活通知——
 /// macOS 14+ 协作式激活下 accessory 应用的窗口可能始终成不了 key window，只靠 resignKey 不可靠。
 final class StatsPopupController: NSObject, NSWindowDelegate {
-    private static let size = NSSize(width: 300, height: 340)
+    private static let width: CGFloat = 348
+    private static let padding: CGFloat = 12
+    private static let tabHeight: CGFloat = 24
+    private static let tabGap: CGFloat = 10
 
     private let window: PopupWindow
     private let tabs: NSSegmentedControl
-    private let usagePage = UsagePage()
-    private let tempPage = TempPage()
-    private let netPage = NetworkPage()
+    private let systemPage = SystemPage(frame: .zero)
     private let aiPage: AIPage
-    private let snapPage: SnapPage
-    private let pages: [NSView]
+    private let settingsPage: SettingsPage
+    private var pages: [NSView] { [systemPage, aiPage, settingsPage] }
 
     private var history: [StatsSample] = []
     private var lastClose = Date.distantPast
     private var mouseMonitor: Any?
+    /// 打开时记录的锚点：状态项中心 X、菜单栏下缘 Y 与屏幕可见区，切换选项卡改高度时复用
+    private var anchor: (midX: CGFloat, top: CGFloat, screen: NSRect?)?
 
-    init(snapActions: SnapPageActions,
-         aiUsages: @escaping () -> [(name: String, color: NSColor, usage: AIUsage)]) {
-        window = PopupWindow(size: Self.size)
-        snapPage = SnapPage(actions: snapActions)
-        aiPage = AIPage(usages: aiUsages)
+    init(settingsActions: SettingsActions, aiProviders: [AIProviderSpec]) {
+        window = PopupWindow(size: NSSize(width: Self.width, height: 200))
+        settingsPage = SettingsPage(actions: settingsActions)
+        aiPage = AIPage(providers: aiProviders)
 
-        pages = [usagePage, tempPage, netPage, aiPage, snapPage]
-        tabs = NSSegmentedControl(labels: ["占用", "温度", "网络", "AI", "设置"],
+        tabs = NSSegmentedControl(labels: ["系统", "AI", "设置"],
                                   trackingMode: .selectOne, target: nil, action: nil)
         super.init()
 
@@ -35,14 +36,11 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         tabs.target = self
         tabs.action = #selector(tabChanged)
         tabs.selectedSegment = 0
-        tabs.frame = NSRect(x: 12, y: Self.size.height - 36, width: Self.size.width - 24, height: 24)
 
         let content = window.contentView!
         content.addSubview(tabs)
-        let pageFrame = NSRect(x: 0, y: 0, width: Self.size.width, height: Self.size.height - 44)
         for page in pages {
-            page.frame = pageFrame
-            page.isHidden = page !== usagePage
+            page.isHidden = page !== systemPage
             content.addSubview(page)
         }
 
@@ -71,15 +69,12 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         guard let buttonWindow = button.window else { return }
 
         self.history = history
+        anchor = (midX: buttonWindow.frame.midX,
+                  top: buttonWindow.frame.minY - 6,
+                  screen: buttonWindow.screen?.visibleFrame)
         refreshVisiblePage(justShown: true)
+        applyLayout()
 
-        // 水平居中对齐图标、挂在菜单栏下方，并收拢进屏幕可见范围
-        var origin = NSPoint(x: buttonWindow.frame.midX - Self.size.width / 2,
-                             y: buttonWindow.frame.minY - Self.size.height - 6)
-        if let screen = buttonWindow.screen?.visibleFrame {
-            origin.x = min(max(origin.x, screen.minX + 8), screen.maxX - Self.size.width - 8)
-        }
-        window.setFrameOrigin(origin)
         if #available(macOS 14.0, *) {
             NSApp.activate()
         } else {
@@ -100,10 +95,11 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         refreshVisiblePage()
     }
 
-    /// AI 用量刷新时调用（若 AI 页正显示则重绘）
+    /// AI 用量刷新时调用；卡片高度可能变化（模型条数量），AI 页可见时同步重排
     func refreshAI() {
-        guard window.isVisible, tabs.selectedSegment == 3 else { return }
+        guard window.isVisible, tabs.selectedSegment == 1 else { return }
         aiPage.update()
+        applyLayout()
     }
 
     private func close() {
@@ -139,19 +135,60 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
             page.isHidden = index != tabs.selectedSegment
         }
         refreshVisiblePage(justShown: true)
+        applyLayout()
+    }
+
+    // MARK: - 布局
+
+    private var currentPageHeight: CGFloat {
+        switch tabs.selectedSegment {
+        case 0: return systemPage.contentHeight
+        case 1: return aiPage.contentHeight
+        default: return settingsPage.contentHeight
+        }
+    }
+
+    /// 按当前选项卡内容高度重设窗口尺寸与位置（挂在菜单栏下方、水平对齐状态项）
+    private func applyLayout() {
+        let pageHeight = currentPageHeight
+        let height = Self.padding + Self.tabHeight + Self.tabGap + pageHeight + Self.padding
+        window.setContentSize(NSSize(width: Self.width, height: height))
+
+        // contentView 为非翻转坐标：选项卡靠顶，页面在下方
+        tabs.frame = NSRect(x: Self.padding, y: height - Self.padding - Self.tabHeight,
+                            width: Self.width - Self.padding * 2, height: Self.tabHeight)
+        for (index, page) in pages.enumerated() {
+            let own: CGFloat
+            switch index {
+            case 0: own = systemPage.contentHeight
+            case 1: own = aiPage.contentHeight
+            default: own = settingsPage.contentHeight
+            }
+            page.frame = NSRect(x: Self.padding, y: height - Self.padding - Self.tabHeight - Self.tabGap - own,
+                                width: Self.width - Self.padding * 2, height: own)
+        }
+
+        guard let anchor else { return }
+        var origin = NSPoint(x: anchor.midX - Self.width / 2, y: anchor.top - height)
+        if let screen = anchor.screen {
+            origin.x = min(max(origin.x, screen.minX + 8), screen.maxX - Self.width - 8)
+            origin.y = max(origin.y, screen.minY + 8)
+        }
+        window.setFrameOrigin(origin)
+        // 遮罩裁切的半透明窗口改尺寸后需要重算阴影形状
+        window.invalidateShadow()
     }
 
     /// justShown：页面刚展示（打开弹窗/切换选项卡），此时才触发路由/公网 IP 等一次性查询
     private func refreshVisiblePage(justShown: Bool = false) {
         switch tabs.selectedSegment {
-        case 0: usagePage.update(history)
-        case 1: tempPage.update(history)
+        case 0:
+            systemPage.update(history)
+            if justShown { systemPage.onShow() }
+        case 1:
+            aiPage.update()
         case 2:
-            netPage.update(history)
-            if justShown { netPage.onShow() }
-        case 3: aiPage.update()
-        case 4:
-            if justShown { snapPage.onShow() }
+            if justShown { settingsPage.onShow() }
         default: break
         }
     }
@@ -175,10 +212,23 @@ private final class PopupWindow: NSWindow {
         effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 12
-        effect.layer?.masksToBounds = true
+        // 圆角用 maskImage 裁切：layer cornerRadius 只裁内容层，
+        // 毛玻璃底衬会在四角露出白边
+        effect.maskImage = Self.roundedMask(radius: 14)
         contentView = effect
+    }
+
+    /// 可拉伸的圆角遮罩（capInsets 保证窗口改高度时圆角不变形）
+    private static func roundedMask(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
     }
 
     override var canBecomeKey: Bool { true }

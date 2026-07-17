@@ -8,17 +8,32 @@ enum StatsProbe {
         let cpu = CPUSampler()
         let memory = MemorySampler()
         let gpu = GPUSampler()
+        let disk = DiskSampler()
         let net = NetworkSampler()
         _ = cpu.sample()    // 差分类采样先建立基准
+        _ = cpu.sampleClusters()
+        _ = disk.sample()
         _ = net.sample()
 
         if let smc = SMCReader() {
             let cpuKeys = smc.discoverTemperatureKeys(prefixes: ["Tp", "Te", "Tf"])
             let gpuKeys = smc.discoverTemperatureKeys(prefixes: ["Tg"])
+            let diskKeys = smc.discoverTemperatureKeys(prefixes: ["TH"])
+            let batteryKeys = smc.discoverTemperatureKeys(prefixes: ["TB"]).filter { $0.hasSuffix("T") }
             print("SMC CPU 温度键 (\(cpuKeys.count)): \(cpuKeys.joined(separator: " "))")
             print("SMC GPU 温度键 (\(gpuKeys.count)): \(gpuKeys.joined(separator: " "))")
-            print("CPU 温度: " + (smc.averageTemperature(cpuKeys).map { String(format: "%.1f℃", $0) } ?? "不可用"))
-            print("GPU 温度: " + (smc.averageTemperature(gpuKeys).map { String(format: "%.1f℃", $0) } ?? "不可用"))
+            print("SMC 硬盘温度键 (\(diskKeys.count)): \(diskKeys.joined(separator: " "))")
+            print("SMC 电池温度键 (\(batteryKeys.count)): \(batteryKeys.joined(separator: " "))")
+            func stats(_ keys: [String]) -> String {
+                let values = smc.temperatures(keys)
+                guard !values.isEmpty else { return "不可用" }
+                let avg = values.reduce(0, +) / Double(values.count)
+                return String(format: "平均 %.1f℃  峰值 %.1f℃", avg, values.max()!)
+            }
+            print("CPU 温度: " + stats(cpuKeys))
+            print("GPU 温度: " + stats(gpuKeys))
+            print("硬盘温度: " + stats(diskKeys))
+            print("电池温度: " + stats(batteryKeys))
         } else {
             print("SMC: 连接失败，温度不可用")
         }
@@ -26,16 +41,31 @@ enum StatsProbe {
         Thread.sleep(forTimeInterval: 1.5)
 
         print("CPU 使用率: " + (cpu.sample().map(StatsFormat.percent) ?? "不可用"))
+        if let clusters = cpu.sampleClusters() {
+            print("CPU 簇: E 核 \(StatsFormat.percent(clusters.e))  P 核 \(StatsFormat.percent(clusters.p))")
+        } else {
+            print("CPU 簇: 不可用（无异构核信息）")
+        }
+        let loads = CPUSampler.loadAverages()
+        if loads.count == 3 {
+            print(String(format: "负载: %.2f / %.2f / %.2f", loads[0], loads[1], loads[2]))
+        }
         let gpuResult = gpu.sample()
         print("GPU 使用率: " + (gpuResult.usage.map(StatsFormat.percent) ?? "不可用")
               + "  (IOAccelerator 自带温度: " + (gpuResult.temp.map { String(format: "%.0f℃", $0) } ?? "无") + ")")
-        if let (used, usage) = memory.sample() {
-            print("内存: \(StatsFormat.gigabytes(used)) / \(StatsFormat.gigabytes(memory.total)) GB (\(StatsFormat.percent(usage)))")
+        if let mem = memory.sample() {
+            print("内存: \(StatsFormat.gigabytes(mem.used)) / \(StatsFormat.gigabytes(memory.total)) GB (\(StatsFormat.percent(mem.usage)))"
+                  + "  App \(StatsFormat.gigabytes(mem.app)) GB  联动 \(StatsFormat.gigabytes(mem.wired)) GB  SWAP \(StatsFormat.gigabytes(mem.swap)) GB")
         } else {
             print("内存: 不可用")
         }
+        let io = disk.sample()
+        print("磁盘: 读 \(StatsFormat.mbps(io.read)) MB/s  写 \(StatsFormat.mbps(io.write)) MB/s"
+              + "  累计读 \(StatsFormat.dataVolume(io.readTotal))  累计写 \(StatsFormat.dataVolume(io.writeTotal))")
         let (upSpeed, downSpeed) = net.sample()
-        print("网速: ↑ \(StatsFormat.speed(upSpeed))/s  ↓ \(StatsFormat.speed(downSpeed))/s")
+        let up = StatsFormat.menuSpeed(upSpeed)
+        let down = StatsFormat.menuSpeed(downSpeed)
+        print("网速: ↑ \(up.number)\(up.unit)/s  ↓ \(down.number)\(down.unit)/s")
 
         if let route = RouteInfo.current() {
             print("出口接口: \(route.displayName ?? "?") (\(route.bsdName))  内网 IP: \(route.localIP ?? "—")")
@@ -51,11 +81,8 @@ enum StatsProbe {
         while !fetchDone && Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
         }
-        func text(_ r: PublicIPFetcher.Result?) -> String {
-            r.map { "\($0.ip) · \($0.note ?? "?")" } ?? "获取失败"
-        }
-        print("公网 IP（国内 cip.cc）: \(text(fetcher.domestic))")
-        print("公网 IP（国外 ip.im）: \(text(fetcher.foreign))")
+        let ip = fetcher.current.map { "\($0.ip) · \($0.note ?? "?")" } ?? "获取失败"
+        print("公网 IP（cip.cc）: \(ip)")
         exit(0)
     }
 }

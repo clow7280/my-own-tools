@@ -40,6 +40,10 @@ enum LayoutStore {
     """
 
     private(set) static var config: LayoutConfig = decodeDefault()
+    /// 最近一次（热）重载时间，供设置页展示
+    private(set) static var lastLoaded: Date?
+
+    private static var watcher: DispatchSourceFileSystemObject?
 
     private static func decodeDefault() -> LayoutConfig {
         try! JSONDecoder().decode(LayoutConfig.self, from: Data(defaultJSON.utf8))
@@ -47,6 +51,7 @@ enum LayoutStore {
 
     /// 从配置文件加载；文件不存在或解析失败时回退到默认布局
     static func load() {
+        lastLoaded = Date()
         guard let data = try? Data(contentsOf: configURL),
               let parsed = try? JSONDecoder().decode(LayoutConfig.self, from: data) else {
             config = decodeDefault()
@@ -61,6 +66,20 @@ enum LayoutStore {
         guard !fm.fileExists(atPath: configURL.path) else { return }
         try? fm.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? defaultJSON.write(to: configURL, atomically: true, encoding: .utf8)
+    }
+
+    /// 配置热重载：监视配置目录，保存后自动重载。
+    /// 编辑器保存多为原子替换（rename），监视目录比监视单个文件可靠；
+    /// 目录尚不存在时静默跳过，生成默认文件后再调用即可生效。
+    static func startWatching() {
+        guard watcher == nil else { return }
+        let fd = open(configURL.deletingLastPathComponent().path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
+        source.setEventHandler { load() }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        watcher = source
     }
 }
 
