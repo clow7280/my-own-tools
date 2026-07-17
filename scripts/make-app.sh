@@ -13,7 +13,7 @@ APP="build/MyOwnTool.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp .build/release/MyOwnTool "$APP/Contents/MacOS/MyOwnTool"
+cp .build/release/MyOwnTools "$APP/Contents/MacOS/MyOwnTool"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'

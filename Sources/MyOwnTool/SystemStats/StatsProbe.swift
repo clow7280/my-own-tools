@@ -1,6 +1,6 @@
 import Foundation
 
-/// 命令行探针：`MyOwnTool --stats-probe`
+/// 命令行探针：`MyOwnTools --stats-probe`
 /// 不启动 GUI，直接验证全部数据通路（CPU/GPU/RAM/网速/SMC 温度），打印结果后退出
 enum StatsProbe {
     static func run() -> Never {
@@ -60,7 +60,7 @@ enum StatsProbe {
     }
 }
 
-/// AI 用量探针：`MyOwnTool --ai-probe`，验证 Claude/Codex 凭证读取与端点解析
+/// AI 用量探针：`MyOwnTools --ai-probe`，验证 Claude/Codex 凭证读取与端点解析
 enum AIProbe {
     static func run() -> Never {
         print("== myowntool AI 用量探针 ==")

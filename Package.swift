@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "MyOwnTool",
+    name: "MyOwnTools",
     platforms: [.macOS(.v13)],
     targets: [
-        .executableTarget(name: "MyOwnTool", path: "Sources/MyOwnTool")
+        .executableTarget(name: "MyOwnTools", path: "Sources/MyOwnTool")
     ]
 )
