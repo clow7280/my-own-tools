@@ -148,12 +148,18 @@ final class StatsMonitor {
             guard let v = smc.double(key) else { return false }
             return v > 1 && v < 125
         }
-        cpuTempKeys = keys.filter { ["Tp", "Te", "Tf"].contains(where: $0.hasPrefix) && plausible($0) }
-        gpuTempKeys = keys.filter { $0.hasPrefix("Tg") && plausible($0) }
-        diskTempKeys = keys.filter { $0.hasPrefix("TH") && plausible($0) }
-        batteryTempKeys = keys.filter { $0.hasPrefix("TB") && $0.hasSuffix("T") && plausible($0) }
-        NSLog("MyOwnTools: SMC 温度键 CPU=%d GPU=%d 硬盘=%d 电池=%d",
-              cpuTempKeys?.count ?? 0, gpuTempKeys?.count ?? 0,
-              diskTempKeys?.count ?? 0, batteryTempKeys?.count ?? 0)
+        let cpu = keys.filter { ["Tp", "Te", "Tf"].contains(where: $0.hasPrefix) && plausible($0) }
+        let gpu = keys.filter { $0.hasPrefix("Tg") && plausible($0) }
+        let disk = keys.filter { $0.hasPrefix("TH") && plausible($0) }
+        let battery = keys.filter { $0.hasPrefix("TB") && $0.hasSuffix("T") && plausible($0) }
+        cpuTempKeys = cpu
+        gpuTempKeys = gpu
+        diskTempKeys = disk
+        batteryTempKeys = battery
+        // 核心温度(CPU/GPU)驱动菜单栏边框分级,枚举不到才记一条便于排查机型差异,正常启动静默
+        if cpu.isEmpty || gpu.isEmpty {
+            NSLog("MyOwnTools: SMC 温度键发现异常 CPU=%d GPU=%d 硬盘=%d 电池=%d",
+                  cpu.count, gpu.count, disk.count, battery.count)
+        }
     }
 }
