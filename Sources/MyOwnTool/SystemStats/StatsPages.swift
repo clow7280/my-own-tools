@@ -842,7 +842,7 @@ final class SettingsPage: FlippedView {
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
             ?? "MyOwnTools"
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.1.0"
+            ?? "0.1.1"
         let versionLabel = PageUI.label("\(appName) \(version)", size: 10,
                                         mono: true, color: .tertiaryLabelColor)
         versionLabel.frame = NSRect(x: 2, y: top + 6, width: 150, height: 13)
