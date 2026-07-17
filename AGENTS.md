@@ -35,6 +35,12 @@ swift run MyOwnTools --ai-probe
 - AI 探针会访问用户凭证和远端服务，仅在相关任务中运行，禁止输出或保存 token 与敏感响应。
 - 仓库没有 XCTest target；菜单栏、辅助功能、多显示器和失焦交互需要在图形会话中手工验证。
 - 默认打包证书为 `MyOwnToolSigning`；本机缺少证书时可用 `CODESIGN_IDENTITY=-` 临时验证打包。
+- `MyOwnToolSigning` 是自签名证书，未被信任，`security find-identity -v` 只列有效身份，
+  会显示 0 个身份而隐藏它；用不带 `-v` 的 `security find-identity` 才能确认它是否存在。
+  签名只需私钥和证书、不要求链路受信，所以 `codesign --sign MyOwnToolSigning` 仍可正常签名，
+  不要因为 `-v` 列不出就误判证书丢失而回退 ad-hoc。
+- 替换已安装的 `.app` 前确认新包沿用 `MyOwnToolSigning` 与 `com.clow.myowntools`；
+  改用 ad-hoc 或其他身份会改变签名，令系统按新应用对待并作废已有辅助功能授权。
 
 ## 架构与边界
 
