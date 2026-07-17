@@ -2,9 +2,26 @@ import AppKit
 
 /// AI 订阅用量监视器：定时（默认 5 分钟）并发拉取 ChatGPT / Claude 用量，
 /// 也支持单家手动刷新（弹窗 AI 卡片的刷新按钮）。状态只在主线程读写。
-/// 用量变化慢，且 Claude 端点要求 ≥180s 轮询，故间隔取 300s。
+/// 用量变化慢，且 Claude 端点要求 ≥180s 轮询，故最小间隔取 180s、默认 300s。
 final class AIUsageMonitor {
-    static let interval: TimeInterval = 300
+    /// 自动刷新间隔下限（秒）：Claude 端点要求 ≥180s 轮询
+    static let minInterval: TimeInterval = 180
+    static let defaultInterval: TimeInterval = 300
+    /// 设置页可选的间隔预设（秒），均不低于 minInterval
+    static let intervalOptions: [TimeInterval] = [180, 300, 600, 1800]
+
+    private static let intervalKey = "AIUsageRefreshInterval"
+
+    /// 持久化的自动刷新间隔；低于下限或未设置时回落默认值
+    static var interval: TimeInterval {
+        get {
+            let stored = UserDefaults.standard.double(forKey: intervalKey)
+            return stored >= minInterval ? stored : defaultInterval
+        }
+        set { UserDefaults.standard.set(max(minInterval, newValue), forKey: intervalKey) }
+    }
+
+    private var currentInterval: TimeInterval = AIUsageMonitor.interval
 
     enum Provider: CaseIterable {
         case chatGPT
@@ -33,7 +50,7 @@ final class AIUsageMonitor {
     func start() {
         guard timer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + 2, repeating: Self.interval, leeway: .seconds(10))
+        timer.schedule(deadline: .now() + 2, repeating: currentInterval, leeway: .seconds(10))
         timer.setEventHandler { [weak self] in
             Provider.allCases.forEach { self?.refresh($0) }
         }
@@ -44,6 +61,17 @@ final class AIUsageMonitor {
     func stop() {
         timer?.cancel()
         timer = nil
+    }
+
+    /// 更新自动刷新间隔（主线程调用）：持久化并按新间隔重建定时器
+    func setInterval(_ seconds: TimeInterval) {
+        let clamped = max(Self.minInterval, seconds)
+        guard clamped != currentInterval else { return }
+        Self.interval = clamped
+        currentInterval = clamped
+        guard timer != nil else { return }
+        stop()
+        start()
     }
 
     /// 拉取单家用量（主线程调用）；同一家的进行中请求不重复发起

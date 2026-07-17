@@ -560,12 +560,13 @@ final class AIPage: FlippedView {
             updatedLabel.stringValue = usage.error ?? Self.relativeTime(spec.updatedAt())
             updatedLabel.frame = NSRect(x: nameLabel.frame.maxX + 7, y: 14, width: 130, height: 13)
 
+            // 刷新按钮固定在最右，订阅徽章排在其左侧
+            let buttonSize: CGFloat = 20
+            refreshButton.frame = NSRect(x: PageUI.pageWidth - PageUI.cardPadding - buttonSize,
+                                         y: 9, width: buttonSize, height: buttonSize)
             badge.text = AIUsage.planBadge(usage.plan) ?? ""
             badge.isHidden = badge.text.isEmpty
-            let badgeX = PageUI.pageWidth - PageUI.cardPadding - badge.frame.width
-            badge.setFrameOrigin(NSPoint(x: badgeX, y: 11))
-            refreshButton.frame = NSRect(x: (badge.isHidden ? PageUI.pageWidth - PageUI.cardPadding : badgeX) - 24,
-                                         y: 9, width: 20, height: 20)
+            badge.setFrameOrigin(NSPoint(x: refreshButton.frame.minX - 6 - badge.frame.width, y: 11))
 
             var y: CGFloat = 37
             errorLabel.isHidden = hasData
@@ -698,6 +699,8 @@ struct SettingsActions {
     var setSnapEnabled: (Bool) -> Void
     var loginItemState: () -> Bool?   // nil = 非 .app 运行，不可用
     var setLoginItem: (Bool) -> Void
+    var aiRefreshInterval: () -> TimeInterval
+    var setAIRefreshInterval: (TimeInterval) -> Void
     var openConfig: () -> Void
     var openAXSettings: () -> Void
     var lastLayoutLoad: () -> Date?
@@ -717,6 +720,7 @@ final class SettingsPage: FlippedView {
     private let permissionButton = NSButton(title: "打开设置", target: nil, action: nil)
     private let loginSwitch = NSSwitch()
     private let loginSubtitle = PageUI.label(size: 10.5, color: .tertiaryLabelColor)
+    private let intervalPopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
     private static let rowHeight: CGFloat = 44
 
@@ -800,7 +804,19 @@ final class SettingsPage: FlippedView {
 
     private func buildLoginCard(top: CGFloat) -> CGFloat {
         let card = CardView()
-        let y: CGFloat = 2
+        var y: CGFloat = 2
+
+        _ = addRow("AI 用量自动刷新", subtitle: "后台按此间隔拉取 ChatGPT 与 Claude 用量", y: y, in: card)
+        intervalPopup.controlSize = .small
+        intervalPopup.font = .systemFont(ofSize: 11)
+        intervalPopup.target = self
+        intervalPopup.action = #selector(changeInterval)
+        intervalPopup.removeAllItems()
+        intervalPopup.addItems(withTitles: AIUsageMonitor.intervalOptions.map(Self.intervalTitle))
+        placeTrailing(intervalPopup, y: y, size: NSSize(width: 84, height: 22), in: card)
+        y += Self.rowHeight
+        PageUI.separator(in: card, y: y)
+
         loginSubtitle.stringValue = "登录时静默启动，无 Dock 图标"
         _ = addRow("开机自启", subtitle: nil, y: y, in: card)
         loginSubtitle.frame = NSRect(x: PageUI.cardPadding, y: y + 24, width: PageUI.innerWidth - 90, height: 13)
@@ -809,10 +825,16 @@ final class SettingsPage: FlippedView {
         loginSwitch.target = self
         loginSwitch.action = #selector(toggleLogin)
         placeTrailing(loginSwitch, y: y, size: loginSwitch.intrinsicContentSize, in: card)
+        y += Self.rowHeight
 
-        card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y + Self.rowHeight)
+        card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
-        return top + y + Self.rowHeight
+        return top + y
+    }
+
+    /// 间隔秒数 → 「N 分钟」
+    private static func intervalTitle(_ seconds: TimeInterval) -> String {
+        "\(Int(seconds / 60)) 分钟"
     }
 
     private func buildFooter(top: CGFloat) -> CGFloat {
@@ -862,6 +884,10 @@ final class SettingsPage: FlippedView {
         permissionStatus.isHidden = !trusted
         permissionButton.isHidden = trusted
 
+        let interval = actions.aiRefreshInterval()
+        let intervalIndex = AIUsageMonitor.intervalOptions.firstIndex(of: interval) ?? 0
+        intervalPopup.selectItem(at: intervalIndex)
+
         let login = actions.loginItemState()
         loginSwitch.isEnabled = login != nil
         loginSwitch.state = login == true ? .on : .off
@@ -878,6 +904,11 @@ final class SettingsPage: FlippedView {
         onShow()
     }
     @objc private func openAX() { actions.openAXSettings() }
+    @objc private func changeInterval() {
+        let index = intervalPopup.indexOfSelectedItem
+        guard AIUsageMonitor.intervalOptions.indices.contains(index) else { return }
+        actions.setAIRefreshInterval(AIUsageMonitor.intervalOptions[index])
+    }
     @objc private func restart() { actions.restart() }
     @objc private func quit() { actions.quit() }
 

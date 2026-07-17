@@ -118,6 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NSLog("MyOwnTools: 切换开机自启失败：\(error.localizedDescription)")
                 }
             },
+            aiRefreshInterval: { AIUsageMonitor.interval },
+            setAIRefreshInterval: { [aiMonitor] in aiMonitor.setInterval($0) },
             openConfig: {
                 LayoutStore.writeDefaultIfMissing()
                 LayoutStore.startWatching()     // 目录可能刚创建，补挂监视
