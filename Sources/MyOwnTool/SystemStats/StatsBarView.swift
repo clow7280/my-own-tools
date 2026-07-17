@@ -10,6 +10,9 @@ final class StatsBarView: NSView {
     // MARK: - 布局常量（对齐设计稿 1× 尺寸）
 
     private static let margin: CGFloat = 3
+    /// 内容整体右移的像素：从右边距借出，不改变总宽
+    private static let contentOffset: CGFloat = 4
+    private static let contentLeft: CGFloat = margin + contentOffset
     private static let blockGap: CGFloat = 7
 
     private static let speedFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .medium)
@@ -103,14 +106,14 @@ final class StatsBarView: NSView {
         let numberText = NSAttributedString(string: number, attributes: attrs)
         let unitText = NSAttributedString(string: unit, attributes: attrs)
         let y = lineTop + (Self.speedLineHeight - numberText.size().height) / 2
-        numberText.draw(at: NSPoint(x: Self.margin + Self.speedNumberWidth - numberText.size().width, y: y))
-        unitText.draw(at: NSPoint(x: Self.margin + Self.speedNumberWidth + 0.5, y: y))
+        numberText.draw(at: NSPoint(x: Self.contentLeft + Self.speedNumberWidth - numberText.size().width, y: y))
+        unitText.draw(at: NSPoint(x: Self.contentLeft + Self.speedNumberWidth + 0.5, y: y))
     }
 
     // MARK: - 竖柱
 
     private func drawBars() {
-        var x = Self.margin + Self.speedWidth + Self.blockGap
+        var x = Self.contentLeft + Self.speedWidth + Self.blockGap
         let fillTop = (bounds.height - Self.barFillHeight) / 2
 
         drawBar(x: x, y: fillTop, usage: sample.cpuUsage, fill: StatsPalette.cpu, tier: TempTier(sample.cpuTemp))
@@ -164,7 +167,7 @@ final class StatsBarView: NSView {
     // MARK: - AI 用量环
 
     private func drawRings() {
-        let x = Self.margin + Self.speedWidth + Self.blockGap + Self.barsWidth + Self.blockGap
+        let x = Self.contentLeft + Self.speedWidth + Self.blockGap + Self.barsWidth + Self.blockGap
         let cy = bounds.height / 2
         drawRing(center: NSPoint(x: x + Self.ringDiameter / 2, y: cy), usage: chatGPTUsage,
                  standard: StatsPalette.chatGPT, dim: StatsPalette.chatGPTDim)
