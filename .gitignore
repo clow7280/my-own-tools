@@ -1,4 +1,15 @@
+# Coding agents and IDEs
+.agents/
+.claude/
+.codex/
+.cursor/
+.code/
+.idea/
+
+# OS generated files
+.DS_Store
+
+# Build artifacts and logs
 .build/
 build/
-.DS_Store
 *.log
