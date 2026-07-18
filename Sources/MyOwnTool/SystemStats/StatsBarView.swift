@@ -35,6 +35,9 @@ final class StatsBarView: NSView {
     private static let ringOuterRadius: CGFloat = 7.8
     private static let ringInnerRadius: CGFloat = 4.4
     private static let ringLineWidth: CGFloat = 2.4
+    /// 失败叹号徽章：环中心向右上偏移 4.9pt、直径 8pt（不超出 18pt 环位）
+    private static let badgeOffset: CGFloat = 4.9
+    private static let badgeRadius: CGFloat = 4
 
     static let totalWidth: CGFloat = margin + speedWidth + blockGap + barsWidth
         + blockGap + ringsWidth + margin
@@ -44,6 +47,8 @@ final class StatsBarView: NSView {
     private var sample = StatsSample()
     private var chatGPTUsage: AIUsage?
     private var claudeUsage: AIUsage?
+    private var chatGPTHealth: AIHealth = .ok
+    private var claudeHealth: AIHealth = .ok
 
     // ≥90℃ 紧急档边框以 1.1s 周期闪烁
     private var blinkTimer: Timer?
@@ -60,9 +65,12 @@ final class StatsBarView: NSView {
         needsDisplay = true
     }
 
-    func updateAIUsage(chatGPT: AIUsage?, claude: AIUsage?) {
+    func updateAIUsage(chatGPT: AIUsage?, chatGPTHealth: AIHealth,
+                       claude: AIUsage?, claudeHealth: AIHealth) {
         chatGPTUsage = chatGPT
         claudeUsage = claude
+        self.chatGPTHealth = chatGPTHealth
+        self.claudeHealth = claudeHealth
         needsDisplay = true
     }
 
@@ -170,13 +178,14 @@ final class StatsBarView: NSView {
         let x = Self.contentLeft + Self.speedWidth + Self.blockGap + Self.barsWidth + Self.blockGap
         let cy = bounds.height / 2
         drawRing(center: NSPoint(x: x + Self.ringDiameter / 2, y: cy), usage: chatGPTUsage,
-                 standard: StatsPalette.chatGPT, dim: StatsPalette.chatGPTDim)
+                 standard: StatsPalette.chatGPT, dim: StatsPalette.chatGPTDim, health: chatGPTHealth)
         drawRing(center: NSPoint(x: x + Self.ringDiameter * 1.5 + Self.ringGap, y: cy), usage: claudeUsage,
-                 standard: StatsPalette.claude, dim: StatsPalette.claudeDim)
+                 standard: StatsPalette.claude, dim: StatsPalette.claudeDim, health: claudeHealth)
     }
 
-    /// 双层环：外 5h 标准色 / 内 7d 弱化色；5h 限额取消（无 5h 但有 7d）时外圈画虚点圆
-    private func drawRing(center: NSPoint, usage: AIUsage?, standard: NSColor, dim: NSColor) {
+    /// 双层环：外 5h 标准色 / 内 7d 弱化色；5h 限额取消（无 5h 但有 7d）时外圈画虚点圆；
+    /// 拉取失败时右上角叠叹号徽章（黄=单次失败，红=超过数据过期阈值仍失败）
+    private func drawRing(center: NSPoint, usage: AIUsage?, standard: NSColor, dim: NSColor, health: AIHealth) {
         if let five = usage?.fiveHour {
             drawCircle(center: center, radius: Self.ringOuterRadius, color: StatsPalette.ringTrack)
             drawArc(center: center, radius: Self.ringOuterRadius, fraction: five, color: standard)
@@ -190,6 +199,23 @@ final class StatsBarView: NSView {
         if let seven = usage?.sevenDay {
             drawArc(center: center, radius: Self.ringInnerRadius, fraction: seven, color: dim)
         }
+
+        if health != .ok {
+            drawWarningBadge(center: NSPoint(x: center.x + Self.badgeOffset, y: center.y - Self.badgeOffset),
+                             color: health == .stale ? .systemRed : .systemYellow)
+        }
+    }
+
+    /// 叹号徽章：实心圆底 + 白色叹号（圆角短棒在上、圆点在下，flipped 坐标系）
+    private func drawWarningBadge(center: NSPoint, color: NSColor) {
+        let r = Self.badgeRadius
+        color.setFill()
+        NSBezierPath(ovalIn: NSRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)).fill()
+
+        NSColor.white.setFill()
+        NSBezierPath(roundedRect: NSRect(x: center.x - 0.75, y: center.y - 2.4, width: 1.5, height: 3.2),
+                     xRadius: 0.75, yRadius: 0.75).fill()
+        NSBezierPath(ovalIn: NSRect(x: center.x - 0.8, y: center.y + 1.4, width: 1.6, height: 1.6)).fill()
     }
 
     private func drawCircle(center: NSPoint, radius: CGFloat, color: NSColor) {

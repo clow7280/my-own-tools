@@ -551,7 +551,7 @@ final class AIPage: FlippedView {
         /// 填充数据、重排并返回卡片高度
         func apply() -> CGFloat {
             let usage = spec.usage()
-            let hasData = usage.fiveHour != nil || usage.sevenDay != nil || !usage.models.isEmpty
+            let hasData = usage.hasData
 
             // 标题行
             nameLabel.frame = NSRect(x: PageUI.cardPadding, y: 11, width: 120, height: 17)
@@ -701,6 +701,8 @@ struct SettingsActions {
     var setLoginItem: (Bool) -> Void
     var aiRefreshInterval: () -> TimeInterval
     var setAIRefreshInterval: (TimeInterval) -> Void
+    var aiStaleInterval: () -> TimeInterval
+    var setAIStaleInterval: (TimeInterval) -> Void
     var openConfig: () -> Void
     var openAXSettings: () -> Void
     var lastLayoutLoad: () -> Date?
@@ -708,7 +710,7 @@ struct SettingsActions {
     var quit: () -> Void
 }
 
-/// 拖拽分屏 / 布局配置 / 辅助功能权限 / 开机自启 / 版本与重启退出（设计稿 3c）
+/// 拖拽分屏 / AI 用量 / 开机自启 / 版本与重启退出（设计稿 3c）
 final class SettingsPage: FlippedView {
     private(set) var contentHeight: CGFloat = 0
 
@@ -721,6 +723,7 @@ final class SettingsPage: FlippedView {
     private let loginSwitch = NSSwitch()
     private let loginSubtitle = PageUI.label(size: 10.5, color: .tertiaryLabelColor)
     private let intervalPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let stalePopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
     private static let rowHeight: CGFloat = 44
 
@@ -730,6 +733,7 @@ final class SettingsPage: FlippedView {
 
         var y: CGFloat = 0
         y = buildSnapCard(top: y) + PageUI.cardGap
+        y = buildAICard(top: y) + PageUI.cardGap
         y = buildLoginCard(top: y) + PageUI.cardGap
         y = buildFooter(top: y)
         contentHeight = y
@@ -802,7 +806,8 @@ final class SettingsPage: FlippedView {
         return top + y
     }
 
-    private func buildLoginCard(top: CGFloat) -> CGFloat {
+    /// AI 用量卡片：自动刷新间隔 + 数据过期阈值
+    private func buildAICard(top: CGFloat) -> CGFloat {
         let card = CardView()
         var y: CGFloat = 2
 
@@ -816,6 +821,25 @@ final class SettingsPage: FlippedView {
         placeTrailing(intervalPopup, y: y, size: NSSize(width: 84, height: 22), in: card)
         y += Self.rowHeight
         PageUI.separator(in: card, y: y)
+
+        _ = addRow("数据过期阈值", subtitle: "拉取失败超过该时长后，菜单栏叹号由黄转红", y: y, in: card)
+        stalePopup.controlSize = .small
+        stalePopup.font = .systemFont(ofSize: 11)
+        stalePopup.target = self
+        stalePopup.action = #selector(changeStaleInterval)
+        stalePopup.removeAllItems()
+        stalePopup.addItems(withTitles: AIUsageMonitor.staleOptions.map(Self.intervalTitle))
+        placeTrailing(stalePopup, y: y, size: NSSize(width: 84, height: 22), in: card)
+        y += Self.rowHeight
+
+        card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
+        addSubview(card)
+        return top + y
+    }
+
+    private func buildLoginCard(top: CGFloat) -> CGFloat {
+        let card = CardView()
+        var y: CGFloat = 2
 
         loginSubtitle.stringValue = "登录时静默启动，无 Dock 图标"
         _ = addRow("开机自启", subtitle: nil, y: y, in: card)
@@ -832,9 +856,9 @@ final class SettingsPage: FlippedView {
         return top + y
     }
 
-    /// 间隔秒数 → 「N 分钟」
+    /// 间隔秒数 → 「N 分钟」，整小时显示「N 小时」
     private static func intervalTitle(_ seconds: TimeInterval) -> String {
-        "\(Int(seconds / 60)) 分钟"
+        seconds >= 3600 ? "\(Int(seconds / 3600)) 小时" : "\(Int(seconds / 60)) 分钟"
     }
 
     private func buildFooter(top: CGFloat) -> CGFloat {
@@ -888,6 +912,11 @@ final class SettingsPage: FlippedView {
         let intervalIndex = AIUsageMonitor.intervalOptions.firstIndex(of: interval) ?? 0
         intervalPopup.selectItem(at: intervalIndex)
 
+        let stale = actions.aiStaleInterval()
+        let staleIndex = AIUsageMonitor.staleOptions.firstIndex(of: stale)
+            ?? AIUsageMonitor.staleOptions.firstIndex(of: AIUsageMonitor.defaultStaleInterval) ?? 0
+        stalePopup.selectItem(at: staleIndex)
+
         let login = actions.loginItemState()
         loginSwitch.isEnabled = login != nil
         loginSwitch.state = login == true ? .on : .off
@@ -908,6 +937,11 @@ final class SettingsPage: FlippedView {
         let index = intervalPopup.indexOfSelectedItem
         guard AIUsageMonitor.intervalOptions.indices.contains(index) else { return }
         actions.setAIRefreshInterval(AIUsageMonitor.intervalOptions[index])
+    }
+    @objc private func changeStaleInterval() {
+        let index = stalePopup.indexOfSelectedItem
+        guard AIUsageMonitor.staleOptions.indices.contains(index) else { return }
+        actions.setAIStaleInterval(AIUsageMonitor.staleOptions[index])
     }
     @objc private func restart() { actions.restart() }
     @objc private func quit() { actions.quit() }

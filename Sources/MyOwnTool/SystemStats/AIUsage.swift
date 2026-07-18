@@ -17,6 +17,11 @@ struct AIUsage {
     var plan: String?           // 订阅计划原始值（pro / max…）
     var error: String?         // 读取失败时的原因（供 AI 页显示）
 
+    /// 是否带有任一窗口或专属模型数据
+    var hasData: Bool {
+        fiveHour != nil || sevenDay != nil || !models.isEmpty
+    }
+
     /// 订阅计划原始值 → 徽章文本（"pro"→"Pro"，"max…20x"→"Max 20×"）
     static func planBadge(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
@@ -32,6 +37,15 @@ struct AIUsage {
         if lower.contains("pro") { return "Pro" }
         return raw.prefix(1).uppercased() + raw.dropFirst()
     }
+}
+
+/// 单家提供方的拉取健康状态（DESIGN.md 环失败叹号徽章）：
+/// ok = 最近一次拉取成功；warning = 最近一次失败但数据尚新；
+/// stale = 最近一次失败且距上次成功已超过数据过期阈值。
+enum AIHealth {
+    case ok
+    case warning
+    case stale
 }
 
 // MARK: - Claude

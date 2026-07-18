@@ -67,8 +67,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         aiMonitor.onUpdate = { [weak self] in
             guard let self else { return }
-            self.statsBarView?.updateAIUsage(chatGPT: self.aiMonitor.chatGPT,
-                                             claude: self.aiMonitor.claude)
+            // 菜单栏环用展示数据（失败时回落上次成功快照）并附带健康状态画叹号徽章
+            self.statsBarView?.updateAIUsage(chatGPT: self.aiMonitor.displayUsage(.chatGPT),
+                                             chatGPTHealth: self.aiMonitor.health(.chatGPT),
+                                             claude: self.aiMonitor.displayUsage(.claude),
+                                             claudeHealth: self.aiMonitor.health(.claude))
             self.statsPopup?.refreshAI()
         }
         aiMonitor.start()
@@ -120,6 +123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             aiRefreshInterval: { AIUsageMonitor.interval },
             setAIRefreshInterval: { [aiMonitor] in aiMonitor.setInterval($0) },
+            aiStaleInterval: { AIUsageMonitor.staleInterval },
+            setAIStaleInterval: { AIUsageMonitor.staleInterval = $0 },
             openConfig: {
                 LayoutStore.writeDefaultIfMissing()
                 LayoutStore.startWatching()     // 目录可能刚创建，补挂监视

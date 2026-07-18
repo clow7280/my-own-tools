@@ -21,6 +21,21 @@ final class AIUsageMonitor {
         set { UserDefaults.standard.set(max(minInterval, newValue), forKey: intervalKey) }
     }
 
+    /// 数据过期阈值预设（秒）：失败持续且距上次成功超过该时长时，叹号由黄转红
+    static let staleOptions: [TimeInterval] = [600, 1800, 3600, 7200]
+    static let defaultStaleInterval: TimeInterval = 1800
+
+    private static let staleKey = "AIUsageStaleInterval"
+
+    /// 持久化的数据过期阈值；未设置或非法时回落默认值
+    static var staleInterval: TimeInterval {
+        get {
+            let stored = UserDefaults.standard.double(forKey: staleKey)
+            return stored > 0 ? stored : defaultStaleInterval
+        }
+        set { UserDefaults.standard.set(newValue, forKey: staleKey) }
+    }
+
     private var currentInterval: TimeInterval = AIUsageMonitor.interval
 
     enum Provider: CaseIterable {
@@ -32,6 +47,12 @@ final class AIUsageMonitor {
     private(set) var claude = AIUsage(error: "加载中…")
     private(set) var chatGPTUpdatedAt: Date?
     private(set) var claudeUpdatedAt: Date?
+
+    // 失败叹号徽章所需状态：最近一次成功快照、成功时间、当前失败段起点
+    private var lastGood: [Provider: AIUsage] = [:]
+    private var lastSuccessAt: [Provider: Date] = [:]
+    private var firstFailureAt: [Provider: Date] = [:]
+    private var healths: [Provider: AIHealth] = [:]
 
     /// 任一家数据更新后在主线程回调
     var onUpdate: (() -> Void)?
@@ -45,6 +66,18 @@ final class AIUsageMonitor {
 
     func updatedAt(_ provider: Provider) -> Date? {
         provider == .chatGPT ? chatGPTUpdatedAt : claudeUpdatedAt
+    }
+
+    /// 首次拉取完成前保持 ok（不画徽章）
+    func health(_ provider: Provider) -> AIHealth {
+        healths[provider] ?? .ok
+    }
+
+    /// 菜单栏环的展示数据：最近一次失败时回落到上次成功快照，
+    /// 但 Codex 离线快照这类"失败但带数据"的结果优先展示
+    func displayUsage(_ provider: Provider) -> AIUsage {
+        let latest = usage(provider)
+        return latest.hasData ? latest : (lastGood[provider] ?? latest)
     }
 
     func start() {
@@ -87,6 +120,7 @@ final class AIUsageMonitor {
                 case .claude: self.claude = usage
                 }
                 if provider == .chatGPT { self.chatGPTUpdatedAt = Date() } else { self.claudeUpdatedAt = Date() }
+                self.applyHealth(provider, usage: usage)
                 self.inFlight.remove(provider)
                 self.onUpdate?()
             }
@@ -98,5 +132,22 @@ final class AIUsageMonitor {
             case .claude: ClaudeUsageReader.fetch(apply)
             }
         }
+    }
+
+    /// 拉取完成时评估健康状态（主线程调用）。
+    /// error 非空即视为失败（含离线快照）；红色判定以上次成功为基准，
+    /// 从未成功过时以当前失败段起点为基准。
+    private func applyHealth(_ provider: Provider, usage: AIUsage) {
+        let now = Date()
+        guard usage.error != nil else {
+            lastGood[provider] = usage
+            lastSuccessAt[provider] = now
+            firstFailureAt[provider] = nil
+            healths[provider] = .ok
+            return
+        }
+        if firstFailureAt[provider] == nil { firstFailureAt[provider] = now }
+        let reference = lastSuccessAt[provider] ?? firstFailureAt[provider]!
+        healths[provider] = now.timeIntervalSince(reference) > Self.staleInterval ? .stale : .warning
     }
 }
