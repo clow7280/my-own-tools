@@ -96,3 +96,24 @@ swift run MyOwnTools --ai-probe
 - scope 对应根目录一级目录；根目录或无法归类时用 `misc`，大型联动改动用 `*`。
 - desc 使用简短中文，中文与英文或数字之间加空格。
 - 标题建议不超过 100 字符，强制不超过 120 字符，中文按 2 字符计算。
+
+## 版本号与标签
+
+版本号与 git 标签使用同一个字符串，一律不带 `v` 前缀，形如 `0.2`。
+
+`CFBundleShortVersionString` 只接受 1 到 3 段纯数字，不允许字母，
+标签跟随它可以让脚本与 CI 直接取用标签名，不需要剥前缀。
+`v` 前缀只有 Go modules 强制要求，本项目不适用；SwiftPM 两种写法都能解析。
+
+标签一律用附注标签，消息格式为 `MyOwnTools <版本号>`：
+
+```sh
+git tag -a 0.2 -m "MyOwnTools 0.2"
+```
+
+改版本号时同步更新以下位置，确保全项目只存在一个版本字符串：
+
+- `README.md` 开头的当前版本
+- `scripts/make-app.sh` 中 Info.plist 的 `CFBundleShortVersionString`
+- `SystemStats/StatsPages.swift` 设置页页脚读取 Info.plist 失败时的兜底值
+- `AIUsageCore/Providers/` 下各 provider 请求头里的 `MyOwnTools/<版本号>` User-Agent
