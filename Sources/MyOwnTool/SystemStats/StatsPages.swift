@@ -1,3 +1,4 @@
+import AIUsageCore
 import AppKit
 
 /// 坐标系自上而下的容器，方便页面内做“从顶部往下排”的布局
@@ -73,6 +74,12 @@ final class UsageBar: NSView {
     var fraction: Double = 0 { didSet { needsDisplay = true } }
     var color: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
     var striped = false { didSet { needsDisplay = true } }
+    var segments: [AIUsageSegment] = [] {
+        didSet {
+            toolTip = Self.segmentToolTip(segments)
+            needsDisplay = true
+        }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         let radius = bounds.height / 2
@@ -107,6 +114,37 @@ final class UsageBar: NSView {
         color.setFill()
         NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: width, height: bounds.height),
                      xRadius: radius, yRadius: radius).fill()
+
+        // Codex 周用量：填充总长度仍表示 7 天已用百分比，细分隔线表示各 UTC 日期桶的贡献。
+        let total = segments.reduce(0) { $0 + max($1.value, 0) }
+        guard segments.count > 1, total > 0, width >= 12 else { return }
+        NSGraphicsContext.current?.saveGraphicsState()
+        track.addClip()
+        StatsPalette.usageTrack.setFill()
+        var cumulative = 0.0
+        for day in segments.dropLast() {
+            cumulative += max(day.value, 0)
+            let x = width * CGFloat(cumulative / total)
+            if x > 2, x < width - 2 {
+                NSRect(x: x - 0.5, y: 0, width: 1, height: bounds.height).fill()
+            }
+        }
+        NSGraphicsContext.current?.restoreGraphicsState()
+    }
+
+    private static func segmentToolTip(_ values: [AIUsageSegment]) -> String? {
+        let total = values.reduce(0) { $0 + max($1.value, 0) }
+        guard total > 0 else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "MM-dd"
+        let rows = values.map { value in
+            let share = Int((max(value.value, 0) / total * 100).rounded())
+            let label = value.date.map(formatter.string) ?? value.label
+            return "\(label)  本周已用中的 \(share)%"
+        }
+        return (["每日用量（UTC）"] + rows).joined(separator: "\n")
     }
 }
 
@@ -464,19 +502,12 @@ final class SystemPage: FlippedView {
 
 /// AI 提供方的展示与交互配置（AppDelegate 装配）
 struct AIProviderSpec {
-    enum Kind {
-        case chatGPT
-        case claude
-    }
-
-    var kind: Kind
-    var name: String
-    var usage: () -> AIUsage
-    var updatedAt: () -> Date?
+    var presentation: AIProviderPresentation
+    var state: () -> AIProviderState
     var refresh: () -> Void
 }
 
-/// ChatGPT / Claude 各一张卡片：标题行 + 5h / 7d / 专属模型用量条（设计稿 3b）
+/// ChatGPT / Claude / OpenCode 各一张卡片：标题行 + 各订阅窗口与专属模型用量条（设计稿 3b）
 final class AIPage: FlippedView {
     private(set) var contentHeight: CGFloat = 0
     private var cards: [ProviderCard] = []
@@ -510,31 +541,28 @@ final class AIPage: FlippedView {
         private let nameLabel: NSTextField
         private let updatedLabel = PageUI.label(size: 10, color: .tertiaryLabelColor)
         private let refreshButton = NSButton()
+        private let refreshSpinner = NSProgressIndicator()
         private let badge: BadgeView
         private let errorLabel = PageUI.label(size: 11, color: .secondaryLabelColor)
         private var rows: [UsageRow] = []
 
-        private var standard: NSColor {
-            spec.kind == .chatGPT ? StatsPalette.chatGPT : StatsPalette.claude
-        }
-        private var dimColor: NSColor {
-            spec.kind == .chatGPT ? StatsPalette.chatGPTDim : StatsPalette.claudeDim
-        }
-        private var deep: NSColor {
-            spec.kind == .chatGPT ? StatsPalette.chatGPTDeep : StatsPalette.claudeDeep
-        }
+        private var standard: NSColor { self.spec.presentation.standardColor }
+        private var deep: NSColor { self.spec.presentation.deepColor }
 
         init(spec: AIProviderSpec) {
             self.spec = spec
-            nameLabel = PageUI.label(spec.name, size: 13, weight: .semibold)
-            badge = BadgeView(textColor: spec.kind == .chatGPT ? StatsPalette.chatGPTDeep : StatsPalette.claudeDeep,
-                              background: spec.kind == .chatGPT ? StatsPalette.chatGPTBadgeBG : StatsPalette.claudeBadgeBG)
+            nameLabel = PageUI.label(spec.presentation.displayName, size: 13, weight: .semibold)
+            badge = BadgeView(
+                textColor: spec.presentation.badgeTextColor,
+                background: spec.presentation.badgeBackgroundColor)
             super.init(frame: .zero)
 
             addSubview(nameLabel)
             addSubview(updatedLabel)
             addSubview(errorLabel)
             addSubview(badge)
+            errorLabel.maximumNumberOfLines = 0
+            errorLabel.lineBreakMode = .byWordWrapping
 
             refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")
             refreshButton.bezelStyle = .circular
@@ -542,6 +570,12 @@ final class AIPage: FlippedView {
             refreshButton.target = self
             refreshButton.action = #selector(refreshTapped)
             addSubview(refreshButton)
+
+            refreshSpinner.style = .spinning
+            refreshSpinner.controlSize = .small
+            refreshSpinner.isDisplayedWhenStopped = false
+            refreshSpinner.isHidden = true
+            addSubview(refreshSpinner)
         }
 
         required init?(coder: NSCoder) { fatalError() }
@@ -550,48 +584,70 @@ final class AIPage: FlippedView {
 
         /// 填充数据、重排并返回卡片高度
         func apply() -> CGFloat {
-            let usage = spec.usage()
-            let hasData = usage.hasData
+            let state = self.spec.state()
+            let usage = state.snapshot
+            let hasData = usage?.hasData == true
 
             // 标题行
             nameLabel.frame = NSRect(x: PageUI.cardPadding, y: 11, width: 120, height: 17)
             nameLabel.sizeToFit()
             nameLabel.setFrameOrigin(NSPoint(x: PageUI.cardPadding, y: 11))
-            updatedLabel.stringValue = usage.error ?? Self.relativeTime(spec.updatedAt())
+            updatedLabel.stringValue = Self.sourceStatus(state)
+            updatedLabel.toolTip = updatedLabel.stringValue
             updatedLabel.frame = NSRect(x: nameLabel.frame.maxX + 7, y: 14, width: 130, height: 13)
 
             // 刷新按钮固定在最右，订阅徽章排在其左侧
             let buttonSize: CGFloat = 20
             refreshButton.frame = NSRect(x: PageUI.pageWidth - PageUI.cardPadding - buttonSize,
                                          y: 9, width: buttonSize, height: buttonSize)
-            badge.text = AIUsage.planBadge(usage.plan) ?? ""
+            refreshSpinner.frame = NSRect(x: refreshButton.frame.midX - 7, y: refreshButton.frame.midY - 7,
+                                          width: 14, height: 14)
+            let refreshing = state.isRefreshing
+            refreshButton.isHidden = refreshing
+            refreshButton.isEnabled = !refreshing
+            refreshSpinner.isHidden = !refreshing
+            if refreshing { refreshSpinner.startAnimation(nil) } else { refreshSpinner.stopAnimation(nil) }
+
+            badge.text = usage?.plan?.displayName ?? ""
             badge.isHidden = badge.text.isEmpty
             badge.setFrameOrigin(NSPoint(x: refreshButton.frame.minX - 6 - badge.frame.width, y: 11))
 
             var y: CGFloat = 37
-            errorLabel.isHidden = hasData
+            let issue = Self.issueText(state)
+            errorLabel.stringValue = issue ?? (hasData ? "" : "暂无数据")
+            errorLabel.toolTip = issue
             if !hasData {
-                errorLabel.stringValue = usage.error ?? "暂无数据"
-                errorLabel.frame = NSRect(x: PageUI.cardPadding, y: y, width: PageUI.innerWidth, height: 15)
+                let errorHeight = self.issueHeight(errorLabel.stringValue)
+                errorLabel.isHidden = false
+                errorLabel.frame = NSRect(
+                    x: PageUI.cardPadding,
+                    y: y,
+                    width: PageUI.innerWidth,
+                    height: errorHeight)
                 rows.forEach { $0.isHidden = true }
-                return y + 15 + 11
+                return y + errorHeight + 11
             }
 
-            // 三类行：5 小时 / 7 天 / 专属模型
+            // 订阅窗口与扩展窗口；新增厂商只需注册 presentation，无需增加 Kind 分支。
             var configs: [UsageRow.Config] = []
-            if let five = usage.fiveHour {
-                configs.append(.init(title: "5 小时窗口", fraction: five, color: standard,
-                                     striped: false, caption: Self.resetText(usage.fiveHourResetsAt)))
-            } else {
-                // 限额暂时取消：品牌色斜纹，无百分比（设计稿 3b ChatGPT 态）
-                configs.append(.init(title: "5 小时窗口", fraction: nil, color: standard,
-                                     striped: true, caption: ""))
+            for item in self.spec.presentation.windows {
+                let window = usage?.window(item.id)
+                configs.append(.init(
+                    title: item.title,
+                    fraction: window?.fraction,
+                    color: self.standard,
+                    striped: window?.value == .notEnforced,
+                    caption: Self.resetText(window?.resetsAt),
+                    segments: window?.segments ?? []))
             }
-            configs.append(.init(title: "7 天窗口", fraction: usage.sevenDay, color: dimColor,
-                                 striped: false, caption: Self.resetText(usage.sevenDayResetsAt)))
-            for model in usage.models {
-                configs.append(.init(title: "\(model.name) 专属", fraction: model.percent, color: deep,
-                                     striped: false, caption: Self.resetText(model.resetsAt)))
+            for window in usage?.extraWindows ?? [] {
+                configs.append(.init(
+                    title: window.title ?? "扩展窗口",
+                    fraction: window.fraction,
+                    color: self.deep,
+                    striped: window.value == .notEnforced,
+                    caption: Self.resetText(window.resetsAt),
+                    segments: window.segments))
             }
 
             while rows.count < configs.count {
@@ -609,7 +665,33 @@ final class AIPage: FlippedView {
                 row.apply(configs[index])
                 y += UsageRow.height + 6
             }
-            return y - 6 + 11
+            y -= 6
+            if let issue {
+                let errorHeight = self.issueHeight(issue)
+                errorLabel.isHidden = false
+                errorLabel.frame = NSRect(
+                    x: PageUI.cardPadding,
+                    y: y + 6,
+                    width: PageUI.innerWidth,
+                    height: errorHeight)
+                y += errorHeight + 6
+            } else {
+                errorLabel.isHidden = true
+            }
+            return y + 11
+        }
+
+        private func issueHeight(_ text: String) -> CGFloat {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byWordWrapping
+            let bounds = (text as NSString).boundingRect(
+                with: NSSize(width: PageUI.innerWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [
+                    .font: self.errorLabel.font ?? NSFont.systemFont(ofSize: 11),
+                    .paragraphStyle: paragraph,
+                ])
+            return max(15, ceil(bounds.height))
         }
 
         private static func relativeTime(_ date: Date?) -> String {
@@ -618,6 +700,27 @@ final class AIPage: FlippedView {
             if seconds < 90 { return "刚刚更新" }
             if seconds < 3600 { return "\(Int(seconds / 60)) 分钟前更新" }
             return "\(Int(seconds / 3600)) 小时前更新"
+        }
+
+        private static func sourceStatus(_ state: AIProviderState) -> String {
+            let time = self.relativeTime(state.lastDataAt)
+            let source: String? = switch state.source?.quality {
+            case .live: state.source.map { $0.label + " 实时" }
+            case .estimated: state.source?.label ?? "本地估算"
+            case .cached: state.source?.label ?? "本地快照"
+            case nil: nil
+            }
+            return [source, time].compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }.joined(separator: " · ")
+        }
+
+        private static func issueText(_ state: AIProviderState) -> String? {
+            var messages: [String] = []
+            if let failure = state.failure { messages.append(failure.message) }
+            messages.append(contentsOf: state.partialFailures.map { "可选明细：" + $0.message })
+            return messages.isEmpty ? nil : messages.joined(separator: "；")
         }
 
         /// 重置时间：24h 内显示倒计时，否则显示星期与时刻
@@ -649,6 +752,7 @@ final class AIPage: FlippedView {
             var color: NSColor
             var striped: Bool
             var caption: String
+            var segments: [AIUsageSegment]
         }
 
         static let height: CGFloat = 36
@@ -683,6 +787,7 @@ final class AIPage: FlippedView {
             bar.color = config.color
             bar.striped = config.striped
             bar.fraction = config.fraction ?? 0
+            bar.segments = config.segments
             percentLabel.stringValue = config.striped ? "" : config.fraction.map(StatsFormat.percent) ?? "—"
             captionLabel.stringValue = config.caption
             resizeSubviews(withOldSize: bounds.size)
@@ -811,7 +916,7 @@ final class SettingsPage: FlippedView {
         let card = CardView()
         var y: CGFloat = 2
 
-        _ = addRow("AI 用量自动刷新", subtitle: "后台按此间隔拉取 ChatGPT 与 Claude 用量", y: y, in: card)
+        _ = addRow("AI 用量自动刷新", subtitle: "后台按此间隔拉取 ChatGPT、Claude 与 OpenCode 用量", y: y, in: card)
         intervalPopup.controlSize = .small
         intervalPopup.font = .systemFont(ofSize: 11)
         intervalPopup.target = self
@@ -866,7 +971,7 @@ final class SettingsPage: FlippedView {
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
             ?? "MyOwnTools"
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.1.1"
+            ?? "0.2"
         let versionLabel = PageUI.label("\(appName) \(version)", size: 10,
                                         mono: true, color: .tertiaryLabelColor)
         versionLabel.frame = NSRect(x: 2, y: top + 6, width: 150, height: 13)

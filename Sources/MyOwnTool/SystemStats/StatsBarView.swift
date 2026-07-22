@@ -1,10 +1,12 @@
+import AIUsageCore
 import AppKit
 
 /// 菜单栏内容视图，从左到右三块（DESIGN.md「菜单栏常驻区」）：
-/// 网速两行数字（上=上传次级色 下=下载标签色）| CPU/GPU/RAM 竖柱 | ChatGPT/Claude 双层用量环。
+/// 网速两行数字（上=上传次级色 下=下载标签色）| CPU/GPU/RAM 竖柱 | ChatGPT/Claude/OpenCode 双层用量环。
 /// 竖柱从底向上填充指标色，1pt 边框按温度分级着色（CPU/GPU 取自身温度，RAM 取硬盘温度），
 /// ≥90℃ 以 1.1s 周期闪烁并带红色光晕。
-/// 环外圈 = 5 小时窗口标准色，内圈 = 7 天窗口弱化色；5 小时限额取消时外圈画品牌色虚点圆。
+/// ChatGPT/Claude 环外圈 = 5 小时、内圈 = 7 天；OpenCode 外圈 = 滚动、内圈 = 每周。
+/// 内外圈统一使用提供方品牌强调色；5 小时限额取消时外圈画品牌色虚点圆。
 /// 固定总宽避免数字跳动引起菜单栏抖动；作为 button 子视图自动跟随菜单栏明暗。
 final class StatsBarView: NSView {
     // MARK: - 布局常量（对齐设计稿 1× 尺寸）
@@ -31,7 +33,9 @@ final class StatsBarView: NSView {
 
     private static let ringDiameter: CGFloat = 18
     private static let ringGap: CGFloat = 6
-    private static let ringsWidth: CGFloat = ringDiameter * 2 + ringGap
+    private static let ringCount = AIProviderPresentationRegistry.menuBar.count
+    private static let ringsWidth: CGFloat = ringDiameter * CGFloat(ringCount)
+        + ringGap * CGFloat(max(ringCount - 1, 0))
     private static let ringOuterRadius: CGFloat = 7.8
     private static let ringInnerRadius: CGFloat = 4.4
     private static let ringLineWidth: CGFloat = 2.4
@@ -45,10 +49,7 @@ final class StatsBarView: NSView {
     // MARK: - 数据
 
     private var sample = StatsSample()
-    private var chatGPTUsage: AIUsage?
-    private var claudeUsage: AIUsage?
-    private var chatGPTHealth: AIHealth = .ok
-    private var claudeHealth: AIHealth = .ok
+    private var aiStates: [AIProviderID: AIProviderState] = [:]
 
     // ≥90℃ 紧急档边框以 1.1s 周期闪烁
     private var blinkTimer: Timer?
@@ -65,12 +66,8 @@ final class StatsBarView: NSView {
         needsDisplay = true
     }
 
-    func updateAIUsage(chatGPT: AIUsage?, chatGPTHealth: AIHealth,
-                       claude: AIUsage?, claudeHealth: AIHealth) {
-        chatGPTUsage = chatGPT
-        claudeUsage = claude
-        self.chatGPTHealth = chatGPTHealth
-        self.claudeHealth = claudeHealth
+    func updateAIUsage(_ states: [AIProviderID: AIProviderState]) {
+        self.aiStates = states
         needsDisplay = true
     }
 
@@ -80,9 +77,11 @@ final class StatsBarView: NSView {
             .contains { TempTier($0) == .critical }
         if emergency, blinkTimer == nil {
             let timer = Timer(timeInterval: 0.55, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                self.blinkOn.toggle()
-                self.needsDisplay = true
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.blinkOn.toggle()
+                    self.needsDisplay = true
+                }
             }
             RunLoop.main.add(timer, forMode: .common)
             blinkTimer = timer
@@ -177,32 +176,62 @@ final class StatsBarView: NSView {
     private func drawRings() {
         let x = Self.contentLeft + Self.speedWidth + Self.blockGap + Self.barsWidth + Self.blockGap
         let cy = bounds.height / 2
-        drawRing(center: NSPoint(x: x + Self.ringDiameter / 2, y: cy), usage: chatGPTUsage,
-                 standard: StatsPalette.chatGPT, dim: StatsPalette.chatGPTDim, health: chatGPTHealth)
-        drawRing(center: NSPoint(x: x + Self.ringDiameter * 1.5 + Self.ringGap, y: cy), usage: claudeUsage,
-                 standard: StatsPalette.claude, dim: StatsPalette.claudeDim, health: claudeHealth)
+        for (index, presentation) in AIProviderPresentationRegistry.menuBar.enumerated() {
+            let centerX = x + Self.ringDiameter / 2
+                + CGFloat(index) * (Self.ringDiameter + Self.ringGap)
+            let state = self.aiStates[presentation.id] ?? AIProviderState()
+            self.drawRing(
+                center: NSPoint(x: centerX, y: cy),
+                snapshot: state.snapshot,
+                presentation: presentation,
+                health: state.health)
+        }
     }
 
-    /// 双层环：外 5h 标准色 / 内 7d 弱化色；5h 限额取消（无 5h 但有 7d）时外圈画虚点圆；
+    /// 双层环：内外圈均用提供方强调色；5h 限额取消（无 5h 但有 7d）时外圈画虚点圆；
     /// 拉取失败时右上角叠叹号徽章（黄=单次失败，红=超过数据过期阈值仍失败）
-    private func drawRing(center: NSPoint, usage: AIUsage?, standard: NSColor, dim: NSColor, health: AIHealth) {
-        if let five = usage?.fiveHour {
-            drawCircle(center: center, radius: Self.ringOuterRadius, color: StatsPalette.ringTrack)
-            drawArc(center: center, radius: Self.ringOuterRadius, fraction: five, color: standard)
-        } else if usage?.sevenDay != nil {
-            drawDottedCircle(center: center, radius: Self.ringOuterRadius, color: standard)
-        } else {
-            drawCircle(center: center, radius: Self.ringOuterRadius, color: StatsPalette.ringTrack)
-        }
-
-        drawCircle(center: center, radius: Self.ringInnerRadius, color: StatsPalette.ringTrack)
-        if let seven = usage?.sevenDay {
-            drawArc(center: center, radius: Self.ringInnerRadius, fraction: seven, color: dim)
-        }
+    private func drawRing(
+        center: NSPoint,
+        snapshot: AIUsageSnapshot?,
+        presentation: AIProviderPresentation,
+        health: AIHealth)
+    {
+        let ids = presentation.ringWindowIDs
+        self.drawUsageCircle(
+            center: center,
+            radius: Self.ringOuterRadius,
+            window: ids.first.flatMap { snapshot?.window($0) },
+            color: presentation.standardColor)
+        self.drawUsageCircle(
+            center: center,
+            radius: Self.ringInnerRadius,
+            window: ids.dropFirst().first.flatMap { snapshot?.window($0) },
+            color: presentation.standardColor)
 
         if health != .ok {
             drawWarningBadge(center: NSPoint(x: center.x + Self.badgeOffset, y: center.y - Self.badgeOffset),
                              color: health == .stale ? .systemRed : .systemYellow)
+        }
+    }
+
+    private func drawUsageCircle(
+        center: NSPoint,
+        radius: CGFloat,
+        window: AIUsageWindow?,
+        color: NSColor)
+    {
+        guard let window else {
+            self.drawCircle(center: center, radius: radius, color: StatsPalette.ringTrack)
+            return
+        }
+        switch window.value {
+        case let .measured(fraction):
+            self.drawCircle(center: center, radius: radius, color: StatsPalette.ringTrack)
+            self.drawArc(center: center, radius: radius, fraction: fraction, color: color)
+        case .notEnforced:
+            self.drawDottedCircle(center: center, radius: radius, color: color)
+        case .unavailable:
+            self.drawCircle(center: center, radius: radius, color: StatsPalette.ringTrack)
         }
     }
 

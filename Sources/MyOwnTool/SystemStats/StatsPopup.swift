@@ -4,6 +4,7 @@ import AppKit
 /// 仿 Stats：无边框毛玻璃窗挂在菜单栏正下方；宽 348pt 固定，高度随选项卡内容变化。
 /// 失焦关闭三重保障：resignKey、全局鼠标按下监视器、应用失活通知——
 /// macOS 14+ 协作式激活下 accessory 应用的窗口可能始终成不了 key window，只靠 resignKey 不可靠。
+@MainActor
 final class StatsPopupController: NSObject, NSWindowDelegate {
     private static let width: CGFloat = 348
     private static let padding: CGFloat = 12
@@ -14,8 +15,9 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     private let tabs: NSSegmentedControl
     private let systemPage = SystemPage(frame: .zero)
     private let aiPage: AIPage
+    private let aiScrollView = NSScrollView(frame: .zero)
     private let settingsPage: SettingsPage
-    private var pages: [NSView] { [systemPage, aiPage, settingsPage] }
+    private var pages: [NSView] { [systemPage, aiScrollView, settingsPage] }
 
     private var history: [StatsSample] = []
     private var lastClose = Date.distantPast
@@ -37,6 +39,13 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         tabs.action = #selector(tabChanged)
         tabs.selectedSegment = 0
 
+        aiScrollView.documentView = aiPage
+        aiScrollView.drawsBackground = false
+        aiScrollView.hasVerticalScroller = true
+        aiScrollView.hasHorizontalScroller = false
+        aiScrollView.autohidesScrollers = true
+        aiScrollView.scrollerStyle = .overlay
+
         let content = window.contentView!
         content.addSubview(tabs)
         for page in pages {
@@ -53,8 +62,15 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
                                                           object: nil)
     }
 
+    /// deinit 不保证运行在主线程，`MainActor.assumeIsolated` 在非主线程会直接 trap；
+    /// 监视器 token 取出后与 self 无关，可安全地回到主线程注销。
     deinit {
-        removeMouseMonitor()
+        guard let token = mouseMonitor else { return }
+        if Thread.isMainThread {
+            NSEvent.removeMonitor(token)
+        } else {
+            DispatchQueue.main.async { NSEvent.removeMonitor(token) }
+        }
     }
 
     // MARK: - 显示控制
@@ -143,9 +159,18 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     private var currentPageHeight: CGFloat {
         switch tabs.selectedSegment {
         case 0: return systemPage.contentHeight
-        case 1: return aiPage.contentHeight
+        case 1: return min(aiPage.contentHeight, self.maximumAIPageHeight)
         default: return settingsPage.contentHeight
         }
+    }
+
+    private var maximumAIPageHeight: CGFloat {
+        let chrome = Self.padding * 2 + Self.tabHeight + Self.tabGap
+        guard let anchor, let screen = anchor.screen else {
+            return max(160, (NSScreen.main?.visibleFrame.height ?? 800) - chrome - 16)
+        }
+        let availableWindowHeight = max(200, anchor.top - screen.minY - 8)
+        return max(160, availableWindowHeight - chrome)
     }
 
     /// 按当前选项卡内容高度重设窗口尺寸与位置（挂在菜单栏下方、水平对齐状态项）
@@ -161,12 +186,18 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
             let own: CGFloat
             switch index {
             case 0: own = systemPage.contentHeight
-            case 1: own = aiPage.contentHeight
+            case 1: own = min(aiPage.contentHeight, self.maximumAIPageHeight)
             default: own = settingsPage.contentHeight
             }
             page.frame = NSRect(x: Self.padding, y: height - Self.padding - Self.tabHeight - Self.tabGap - own,
                                 width: Self.width - Self.padding * 2, height: own)
         }
+        aiPage.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: Self.width - Self.padding * 2,
+            height: aiPage.contentHeight)
+        aiScrollView.hasVerticalScroller = aiPage.contentHeight > maximumAIPageHeight
 
         guard let anchor else { return }
         var origin = NSPoint(x: anchor.midX - Self.width / 2, y: anchor.top - height)
@@ -187,6 +218,10 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
             if justShown { systemPage.onShow() }
         case 1:
             aiPage.update()
+            if justShown {
+                aiScrollView.contentView.scroll(to: .zero)
+                aiScrollView.reflectScrolledClipView(aiScrollView.contentView)
+            }
         case 2:
             if justShown { settingsPage.onShow() }
         default: break

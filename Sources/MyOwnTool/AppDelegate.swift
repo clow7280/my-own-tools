@@ -1,6 +1,8 @@
+import AIUsageCore
 import AppKit
 import ServiceManagement
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let snapController = SnapController()
     private var permissionTimer: Timer?
@@ -33,11 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             snapController.start()
         } else {
             // 等待用户在系统设置中完成授权后自动启动
-            permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] timer in
-                guard let self, Permissions.trusted else { return }
-                timer.invalidate()
-                self.permissionTimer = nil
-                self.snapController.start()
+            permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, Permissions.trusted else { return }
+                    self.permissionTimer?.invalidate()
+                    self.permissionTimer = nil
+                    self.snapController.start()
+                }
             }
         }
     }
@@ -67,11 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         aiMonitor.onUpdate = { [weak self] in
             guard let self else { return }
-            // 菜单栏环用展示数据（失败时回落上次成功快照）并附带健康状态画叹号徽章
-            self.statsBarView?.updateAIUsage(chatGPT: self.aiMonitor.displayUsage(.chatGPT),
-                                             chatGPTHealth: self.aiMonitor.health(.chatGPT),
-                                             claude: self.aiMonitor.displayUsage(.claude),
-                                             claudeHealth: self.aiMonitor.health(.claude))
+            let states = Dictionary(uniqueKeysWithValues: AIProviderPresentationRegistry.menuBar.map {
+                ($0.id, self.aiMonitor.state($0.id))
+            })
+            self.statsBarView?.updateAIUsage(states)
             self.statsPopup?.refreshAI()
         }
         aiMonitor.start()
@@ -86,18 +89,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statsPopup?.toggle(relativeTo: button, history: statsMonitor.history)
     }
 
-    /// AI 页两家提供方的数据源与单家刷新动作
+    /// AI 页由 presentation registry 自动装配；新增厂商不再修改 AppDelegate。
     private func makeAIProviders() -> [AIProviderSpec] {
-        [
-            AIProviderSpec(kind: .chatGPT, name: "ChatGPT",
-                           usage: { [aiMonitor] in aiMonitor.chatGPT },
-                           updatedAt: { [aiMonitor] in aiMonitor.chatGPTUpdatedAt },
-                           refresh: { [aiMonitor] in aiMonitor.refresh(.chatGPT) }),
-            AIProviderSpec(kind: .claude, name: "Claude",
-                           usage: { [aiMonitor] in aiMonitor.claude },
-                           updatedAt: { [aiMonitor] in aiMonitor.claudeUpdatedAt },
-                           refresh: { [aiMonitor] in aiMonitor.refresh(.claude) }),
-        ]
+        AIProviderPresentationRegistry.all.map { presentation in
+            AIProviderSpec(
+                presentation: presentation,
+                state: { [aiMonitor] in aiMonitor.state(presentation.id) },
+                refresh: { [aiMonitor] in aiMonitor.refresh(presentation.id) })
+        }
     }
 
     /// 设置页所需的状态与动作
@@ -124,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             aiRefreshInterval: { AIUsageMonitor.interval },
             setAIRefreshInterval: { [aiMonitor] in aiMonitor.setInterval($0) },
             aiStaleInterval: { AIUsageMonitor.staleInterval },
-            setAIStaleInterval: { AIUsageMonitor.staleInterval = $0 },
+            setAIStaleInterval: { [aiMonitor] in aiMonitor.setStaleInterval($0) },
             openConfig: {
                 LayoutStore.writeDefaultIfMissing()
                 LayoutStore.startWatching()     // 目录可能刚创建，补挂监视

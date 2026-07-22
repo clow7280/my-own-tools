@@ -13,17 +13,18 @@ enum StatsPalette {
     static let cpuSoft = dynamic(0x3478F6, 0.55, 0x5C97FF, 0.6)
     static let gpuSoft = dynamic(0x9A5CD0, 0.55, 0xB57BE8, 0.6)
 
-    // AI 品牌色：标准 = 5 小时窗口，弱化 = 7 天窗口，深变体 = 专属模型条与徽章文字
+    // AI 品牌强调色：同一提供方的全部订阅周期统一使用标准色；深变体只给专属模型与徽章
     static let chatGPT = dynamic(0x10A37F, 1, 0x1FBF93, 1)      // OpenAI 青绿
-    static let chatGPTDim = dynamic(0x10A37F, 0.45, 0x1FBF93, 0.55)
     static let chatGPTDeep = dynamic(0x10A37F, 1, 0x1FBF93, 1)
     static let claude = dynamic(0xD97757, 1, 0xE8906B, 1)       // Claude 珊瑚
-    static let claudeDim = dynamic(0xD97757, 0.45, 0xE8906B, 0.55)
     static let claudeDeep = dynamic(0xC05A38, 1, 0xD97757, 1)
+    static let openCode = dynamic(0x111111, 1, 0xF2F2F2, 1)     // OpenCode 动态墨色
+    static let openCodeDeep = openCode
 
     // 徽章底色（品牌色低透明度）
     static let chatGPTBadgeBG = dynamic(0x10A37F, 0.13, 0x1FBF93, 0.2)
     static let claudeBadgeBG = dynamic(0xD97757, 0.15, 0xE8906B, 0.22)
+    static let openCodeBadgeBG = dynamic(0x111111, 0.1, 0xF2F2F2, 0.16)
 
     // 轨道中性色
     static let barTrack = dynamic(0x000000, 0.09, 0xFFFFFF, 0.18)     // 菜单栏竖柱

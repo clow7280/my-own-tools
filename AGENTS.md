@@ -11,18 +11,24 @@ MyOwnTools 是面向 macOS 13 及以上版本的个人菜单栏应用。
 ```text
 .
 ├── Sources/
+│   ├── AIUsageCore/       AI 提供方 registry、抓取策略与解析，不依赖 AppKit
 │   └── MyOwnTool/
-│       └── SystemStats/   系统采样、AI 用量和状态 UI
+│       └── SystemStats/   系统采样、AI 用量展示和状态 UI
+├── Tests/
+│   └── AIUsageCoreChecks/ AIUsageCore 的离线校验可执行目标
 ├── Resources/             应用资源
+├── docs/                  架构说明
 └── scripts/               图标生成与 app 打包脚本
 ```
 
 根目录的 `README.md` 面向用户，`DESIGN.md` 定义系统状态 UI 规范，`Package.swift` 定义构建目标。
+`docs/AI_USAGE.md` 定义 AI 用量的数据模型、降级顺序、安全边界和新增提供方流程。
 
 ## 构建与验证
 
 ```sh
 swift build
+swift run AIUsageCoreChecks
 swift run MyOwnTools
 swift run MyOwnTools --stats-probe
 swift run MyOwnTools --ai-probe
@@ -30,10 +36,13 @@ swift run MyOwnTools --ai-probe
 ```
 
 - 所有改动完成后至少运行 `swift build` 进行验证。
+- 改动 `AIUsageCore` 或其校验时，额外运行 `swift run AIUsageCoreChecks`。
 - 修改 release、打包或签名逻辑时，额外运行 `swift build -c release` 或打包脚本。
 - 系统状态探针用于验证采样、温度、路由和公网 IP；AI 探针用于验证本机凭证读取与远端接口。
 - AI 探针会访问用户凭证和远端服务，仅在相关任务中运行，禁止输出或保存 token 与敏感响应。
-- 仓库没有 XCTest target；菜单栏、辅助功能、多显示器和失焦交互需要在图形会话中手工验证。
+- 仓库没有 XCTest target，自动化校验由 `AIUsageCoreChecks` 可执行目标承载，
+  只覆盖 `AIUsageCore` 的解析、降级判断与端点构造，不读取真实凭证也不访问网络。
+- 菜单栏、辅助功能、多显示器和失焦交互需要在图形会话中手工验证。
 - 默认打包证书为 `MyOwnToolSigning`；本机缺少证书时可用 `CODESIGN_IDENTITY=-` 临时验证打包。
 - `MyOwnToolSigning` 是自签名证书，未被信任，`security find-identity -v` 只列有效身份，
   会显示 0 个身份而隐藏它；用不带 `-v` 的 `security find-identity` 才能确认它是否存在。
@@ -51,9 +60,12 @@ swift run MyOwnTools --ai-probe
 - 用户布局位于 `~/.config/myowntool/layouts.json`；读取失败时回退默认值，不覆盖已有配置。
 - 差分采样器在系统唤醒后重建基准；硬件数据不可用时应降级显示，不得导致应用退出。
 - SMC 和 IOAccelerator 字段随机型与系统变化，不硬编码单一设备假设。
-- AI 用量统一为 `0...1`；菜单栏双层环外环为 5 小时窗口、内环为 7 天窗口，
-  5 小时限额取消（无 5h 但有 7d 数据）时外环画虚点圆。
-- Claude 与 Codex 接口并非稳定公共契约；改动端点或解析时保留错误状态和 Codex 离线回退。
+- AI 用量统一为 `0...1`，窗口值显式区分已测量、限额取消和数据缺失，不用 `nil` 表达多种含义。
+- 提供方顺序、降级策略与展示分别由 `AIProviderRegistry` 和 `AIProviderPresentationRegistry` 声明，
+  两者必须一一对应；AppKit 类型不得进入 `AIUsageCore`。
+- 菜单栏双层环的内外环窗口由 presentation 声明，5 小时限额取消时外环画虚点圆。
+- Claude、Codex 与 OpenCode 接口并非稳定公共契约；
+  改动端点或解析时保留分类错误状态与既有降级顺序。
 - 登录项仅支持 `.app`；不要随意修改 bundle ID 和签名逻辑，以免破坏辅助功能授权与登录项。
 - 保持 macOS 13 最低版本和零第三方依赖，除非任务明确要求变更。
 - 不修改用户配置、凭证、签名证书或与任务无关的工作区改动。

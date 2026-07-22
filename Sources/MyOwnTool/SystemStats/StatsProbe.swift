@@ -1,3 +1,4 @@
+import AIUsageCore
 import Foundation
 
 /// 命令行探针：`MyOwnTools --stats-probe`
@@ -87,21 +88,20 @@ enum StatsProbe {
     }
 }
 
-/// AI 用量探针：`MyOwnTools --ai-probe`，验证 Claude/Codex 凭证读取与端点解析
+/// AI 用量探针：与 App 共享 provider registry 和 strategy pipeline，不直接点名具体 Reader。
 enum AIProbe {
     static func run() -> Never {
         print("== MyOwnTools AI 用量探针 ==")
         let group = DispatchGroup()
-        // 凭证读取（含 Keychain）放后台，避免弹窗阻塞主线程，主线程照常泵 runloop
-        group.enter()
-        DispatchQueue.global().async {
-            ClaudeUsageReader.fetch { print(format("Claude", $0)); group.leave() }
+        for descriptor in AIProviderRegistry.descriptors {
+            group.enter()
+            descriptor.pipeline.fetch(context: .userInitiated) { outcome in
+                print(self.format(descriptor, outcome))
+                group.leave()
+            }
         }
-        group.enter()
-        DispatchQueue.global().async {
-            CodexUsageReader.fetch { print(format("Codex", $0)); group.leave() }
-        }
-        let deadline = Date().addingTimeInterval(25)
+        // OpenCode 需先读浏览器 Keychain，再串行取得工作区和用量页；给完整流程留足上限。
+        let deadline = Date().addingTimeInterval(45)
         var done = false
         group.notify(queue: .main) { done = true }
         while !done && Date() < deadline {
@@ -111,16 +111,33 @@ enum AIProbe {
         exit(0)
     }
 
-    private static func format(_ name: String, _ u: AIUsage) -> String {
-        func pct(_ v: Double?) -> String { v.map { String(format: "%.0f%%", $0 * 100) } ?? "—" }
-        var s = "\(name): 5h=\(pct(u.fiveHour))  7d=\(pct(u.sevenDay))  plan=\(u.plan ?? "?")"
-        if let e = u.error { s += "  [\(e)]" }
-        if !u.models.isEmpty {
-            s += "\n  模型：" + u.models.map { "\($0.name) \(pct($0.percent))" }.joined(separator: "  ·  ")
+    private static func format(_ descriptor: AIProviderDescriptor, _ outcome: AIUsageFetchOutcome) -> String {
+        var lines = ["\(descriptor.displayName):"]
+        switch outcome.result {
+        case let .success(result):
+            let quality = result.source.quality.rawValue
+            let plan = result.snapshot.plan?.displayName ?? "—"
+            lines[0] += " source=\(result.source.label) quality=\(quality) plan=\(plan)"
+            for window in result.snapshot.windows + result.snapshot.extraWindows {
+                let value: String = switch window.value {
+                case let .measured(fraction): String(format: "%.0f%%", fraction * 100)
+                case .notEnforced: "不限额"
+                case .unavailable: "—"
+                }
+                let reset = window.resetsAt.map { " reset=\($0)" } ?? ""
+                let segments = window.segments.isEmpty ? "" : " segments=\(window.segments.count)"
+                lines.append("  \(window.title ?? window.id.rawValue)=\(value)\(reset)\(segments)")
+            }
+            for issue in result.partialFailures {
+                lines.append("  可选数据：\(issue.kind.rawValue) — \(issue.message)")
+            }
+        case let .failure(failure):
+            lines[0] += " 失败：\(failure.kind.rawValue) — \(failure.message)"
         }
-        if let r = u.fiveHourResetsAt ?? u.sevenDayResetsAt {
-            s += "\n  重置：\(r)"
+        for attempt in outcome.attempts where attempt.failure != nil {
+            let availability = attempt.wasAvailable ? "failed" : "unavailable"
+            lines.append("  attempt \(attempt.strategyID): \(availability)/\(attempt.failure!.kind.rawValue)")
         }
-        return s
+        return lines.joined(separator: "\n")
     }
 }

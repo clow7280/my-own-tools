@@ -5,6 +5,16 @@ let package = Package(
     name: "MyOwnTools",
     platforms: [.macOS(.v13)],
     targets: [
-        .executableTarget(name: "MyOwnTools", path: "Sources/MyOwnTool")
+        .target(name: "AIUsageCore", path: "Sources/AIUsageCore"),
+        .executableTarget(
+            name: "MyOwnTools",
+            dependencies: ["AIUsageCore"],
+            path: "Sources/MyOwnTool"
+        ),
+        .executableTarget(
+            name: "AIUsageCoreChecks",
+            dependencies: ["AIUsageCore"],
+            path: "Tests/AIUsageCoreChecks"
+        )
     ]
 )
