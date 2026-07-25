@@ -17,30 +17,33 @@ final class StatsBarView: NSView {
     private static let contentLeft: CGFloat = margin + contentOffset
     private static let blockGap: CGFloat = 7
 
-    private static let speedFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .medium)
-    private static let speedLineHeight: CGFloat = 10.5
+    private static let speedFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+    private static let speedLineHeight: CGFloat = 11.5
     /// 数字右对齐区宽 = 3 个等宽字符
     private static let speedNumberWidth: CGFloat = ceil(("888" as NSString).size(withAttributes: [.font: speedFont]).width)
     private static let speedUnitWidth: CGFloat = ceil(("M" as NSString).size(withAttributes: [.font: speedFont]).width)
     private static let speedWidth: CGFloat = speedNumberWidth + 0.5 + speedUnitWidth
 
-    private static let barFillWidth: CGFloat = 6
-    private static let barFillHeight: CGFloat = 16
+    private static let barFillWidth: CGFloat = 7
+    private static let barFillHeight: CGFloat = 17
     private static let barGap: CGFloat = 3.5
+    /// 填充圆角随柱宽同比微调，边框圆角始终为它加 0.5 以与 -0.5 外扩同心
+    private static let barFillRadius: CGFloat = 2.5
+    private static let barBorderRadius: CGFloat = barFillRadius + 0.5
     /// 单柱视觉宽（含 1pt 边框）
     private static let barVisualWidth: CGFloat = barFillWidth + 2
     private static let barsWidth: CGFloat = barVisualWidth * 3 + barGap * 2
 
-    private static let ringDiameter: CGFloat = 18
+    private static let ringDiameter: CGFloat = 20
     private static let ringGap: CGFloat = 6
     private static let ringCount = AIProviderPresentationRegistry.menuBar.count
     private static let ringsWidth: CGFloat = ringDiameter * CGFloat(ringCount)
         + ringGap * CGFloat(max(ringCount - 1, 0))
-    private static let ringOuterRadius: CGFloat = 7.8
-    private static let ringInnerRadius: CGFloat = 4.4
-    private static let ringLineWidth: CGFloat = 2.4
-    /// 失败叹号徽章：环中心向右上偏移 4.9pt、直径 8pt（不超出 18pt 环位）
-    private static let badgeOffset: CGFloat = 4.9
+    private static let ringOuterRadius: CGFloat = 8.8
+    private static let ringInnerRadius: CGFloat = 5.0
+    private static let ringLineWidth: CGFloat = 2.6
+    /// 失败叹号徽章：环中心向右上偏移 5.5pt、直径 8pt（不超出 20pt 环位）
+    private static let badgeOffset: CGFloat = 5.5
     private static let badgeRadius: CGFloat = 4
 
     static let totalWidth: CGFloat = margin + speedWidth + blockGap + barsWidth
@@ -134,7 +137,8 @@ final class StatsBarView: NSView {
     /// 竖柱：轨道 + 从底向上填充（flipped 坐标系下即从 maxY 往上）+ 温度分级边框
     private func drawBar(x: CGFloat, y: CGFloat, usage: Double, fill: NSColor, tier: TempTier?) {
         let track = NSRect(x: x + 1, y: y, width: Self.barFillWidth, height: Self.barFillHeight)
-        let trackPath = NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2)
+        let trackPath = NSBezierPath(roundedRect: track,
+                                     xRadius: Self.barFillRadius, yRadius: Self.barFillRadius)
 
         StatsPalette.barTrack.setFill()
         trackPath.fill()
@@ -149,7 +153,8 @@ final class StatsBarView: NSView {
         NSGraphicsContext.current?.restoreGraphicsState()
 
         guard let tier else { return }
-        let border = NSBezierPath(roundedRect: track.insetBy(dx: -0.5, dy: -0.5), xRadius: 2.5, yRadius: 2.5)
+        let border = NSBezierPath(roundedRect: track.insetBy(dx: -0.5, dy: -0.5),
+                                  xRadius: Self.barBorderRadius, yRadius: Self.barBorderRadius)
         border.lineWidth = 1
         if tier == .critical {
             // 闪烁：亮拍全强度 + 红色光晕，暗拍压低透明度
