@@ -75,7 +75,9 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
 
     // MARK: - 显示控制
 
-    func toggle(relativeTo button: NSStatusBarButton, history: [StatsSample]) {
+    /// preferredTab：本次打开要选中的选项卡；nil（如键盘触发取不到点击坐标）保持当前选项卡。
+    /// 只在真正打开时生效，关闭与防抖拦截都不改选项卡。
+    func toggle(relativeTo button: NSStatusBarButton, history: [StatsSample], preferredTab: Int? = nil) {
         if window.isVisible {
             close()
             return
@@ -88,6 +90,10 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         anchor = (midX: buttonWindow.frame.midX,
                   top: buttonWindow.frame.minY - 6,
                   screen: buttonWindow.screen?.visibleFrame)
+        if let preferredTab, pages.indices.contains(preferredTab), preferredTab != tabs.selectedSegment {
+            tabs.selectedSegment = preferredTab
+            syncPageVisibility()
+        }
         refreshVisiblePage(justShown: true)
         applyLayout()
 
@@ -147,11 +153,16 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     }
 
     @objc private func tabChanged() {
+        syncPageVisibility()
+        refreshVisiblePage(justShown: true)
+        applyLayout()
+    }
+
+    /// 只展示当前选项卡对应的页面
+    private func syncPageVisibility() {
         for (index, page) in pages.enumerated() {
             page.isHidden = index != tabs.selectedSegment
         }
-        refreshVisiblePage(justShown: true)
-        applyLayout()
     }
 
     // MARK: - 布局

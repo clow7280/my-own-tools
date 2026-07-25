@@ -86,7 +86,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statsPopup = StatsPopupController(settingsActions: makeSettingsActions(),
                                               aiProviders: makeAIProviders())
         }
-        statsPopup?.toggle(relativeTo: button, history: statsMonitor.history)
+        statsPopup?.toggle(relativeTo: button,
+                           history: statsMonitor.history,
+                           preferredTab: preferredTab(for: button))
+    }
+
+    /// 状态项内的点击位置决定弹窗初始选项卡；左右键一致。
+    /// 键盘或辅助功能触发时取不到鼠标坐标，返回 nil 让弹窗保持当前选项卡。
+    private func preferredTab(for button: NSStatusBarButton) -> Int? {
+        guard let event = NSApp.currentEvent, event.window === button.window else { return nil }
+        switch event.type {
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp,
+             .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            // StatsBarView 是 button 的子视图且原点 x 为 0，按钮坐标可直接当作视图坐标
+            return StatsBarView.preferredTabIndex(forClickX: button.convert(event.locationInWindow, from: nil).x)
+        default:
+            return nil
+        }
     }
 
     /// AI 页由 presentation registry 自动装配；新增厂商不再修改 AppDelegate。

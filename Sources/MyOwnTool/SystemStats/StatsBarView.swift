@@ -34,6 +34,9 @@ final class StatsBarView: NSView {
     private static let barVisualWidth: CGFloat = barFillWidth + 2
     private static let barsWidth: CGFloat = barVisualWidth * 3 + barGap * 2
 
+    /// 环块左边界：网速块与竖柱块之后
+    private static let ringsLeft: CGFloat = contentLeft + speedWidth + blockGap + barsWidth + blockGap
+
     private static let ringDiameter: CGFloat = 20
     private static let ringGap: CGFloat = 6
     private static let ringCount = AIProviderPresentationRegistry.menuBar.count
@@ -48,6 +51,12 @@ final class StatsBarView: NSView {
 
     static let totalWidth: CGFloat = margin + speedWidth + blockGap + barsWidth
         + blockGap + ringsWidth + margin
+
+    /// 按点击落点决定弹窗初始选项卡：环块区域（含其左侧半个块间距）进 AI 页，网速与竖柱区域进系统页。
+    /// 入参是 status item button 的本地横坐标；本视图原点 x 为 0，与按钮坐标同轴，可直接比较。
+    static func preferredTabIndex(forClickX x: CGFloat) -> Int {
+        x >= ringsLeft - blockGap / 2 ? 1 : 0
+    }
 
     // MARK: - 数据
 
@@ -179,7 +188,7 @@ final class StatsBarView: NSView {
     // MARK: - AI 用量环
 
     private func drawRings() {
-        let x = Self.contentLeft + Self.speedWidth + Self.blockGap + Self.barsWidth + Self.blockGap
+        let x = Self.ringsLeft
         let cy = bounds.height / 2
         for (index, presentation) in AIProviderPresentationRegistry.menuBar.enumerated() {
             let centerX = x + Self.ringDiameter / 2
