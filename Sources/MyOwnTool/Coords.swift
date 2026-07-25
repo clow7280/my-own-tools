@@ -15,4 +15,9 @@ enum Coords {
     static func cocoaToAX(_ rect: CGRect) -> CGRect {
         CGRect(x: rect.minX, y: primaryFrame.maxY - rect.maxY, width: rect.width, height: rect.height)
     }
+
+    /// 与 cocoaToAX 互为逆变换（翻转 Y 的自反运算），单独命名以便调用处表明方向
+    static func axToCocoa(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX, y: primaryFrame.maxY - rect.maxY, width: rect.width, height: rect.height)
+    }
 }

@@ -3,7 +3,7 @@ import AppKit
 /// 点击菜单栏状态区弹出的详情窗：系统 / AI / 设置三个选项卡。
 /// 仿 Stats：无边框毛玻璃窗挂在菜单栏正下方；宽 348pt 固定，高度随选项卡内容变化。
 /// 失焦关闭三重保障：resignKey、全局鼠标按下监视器、应用失活通知——
-/// macOS 14+ 协作式激活下 accessory 应用的窗口可能始终成不了 key window，只靠 resignKey 不可靠。
+/// 协作式激活下 accessory 应用的窗口可能始终成不了 key window，只靠 resignKey 不可靠。
 @MainActor
 final class StatsPopupController: NSObject, NSWindowDelegate {
     private static let width: CGFloat = 348
@@ -97,11 +97,7 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         refreshVisiblePage(justShown: true)
         applyLayout()
 
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
 
         // 点到本应用窗口之外（含其他应用、桌面、别的菜单栏项）一律关闭。

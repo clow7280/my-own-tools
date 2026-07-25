@@ -1,6 +1,7 @@
 import AppKit
 
-/// 监听「按住 Shift 拖动窗口」手势：拖动时显示分区标记，松手时把窗口吸附到所在分区。
+/// 监听 Shift 窗口手势：按住 Shift 拖动时显示分区标记、松手吸附到所在分区；
+/// Shift + 双击标题栏则对该窗口依次执行 居中 → 填充 → 还原。
 ///
 /// 修饰键选 Shift 而非 Option：Option-点按另一 App 的窗口会触发系统的
 /// 「隐藏当前 App」行为，规避它需要能改写事件流的 CGEventTap，而主动式 tap
@@ -22,6 +23,19 @@ final class SnapController {
     }
     private var session: DragSession?
 
+    /// Shift + 双击标题栏的布局循环状态，只保留最近一个窗口，不持久化
+    private struct TitleBarCycle {
+        enum Stage { case centered, filled }
+        let window: AXWindow
+        let originalFrame: CGRect     // AX 坐标，首次触发前的窗口位置
+        var stage: Stage              // 已经应用的阶段
+        var appliedFrame: CGRect      // AX 坐标，最近一次设置后窗口实际所在位置
+    }
+    private var titleBarCycle: TitleBarCycle?
+
+    /// 判定「窗口仍停在我们上次摆放的位置」的容差
+    private static let cycleTolerance: CGFloat = 4
+
     func start() {
         guard eventMonitor == nil else { return }
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .flagsChanged]
@@ -37,7 +51,13 @@ final class SnapController {
         switch event.type {
         case .leftMouseDown:
             session = nil
-            if shiftHeld { beginSession() }
+            guard shiftHeld else { break }
+            // 双击标题栏走布局循环；随后清空会话，避免双击第一次 mouseDown 建立的会话影响拖拽判定
+            if event.clickCount == 2, cycleTitleBarLayout() {
+                session = nil
+                break
+            }
+            beginSession()
         case .leftMouseDragged:
             guard shiftHeld else {
                 if overlay.isVisible { pauseOverlay() }
@@ -115,5 +135,77 @@ final class SnapController {
     private func cancel() {
         overlay.hide()
         session = nil
+        titleBarCycle = nil
+    }
+
+    // MARK: - Shift + 双击标题栏
+
+    /// 对同一窗口依次执行 居中 → 填充 → 还原，还原后再触发从居中重新开始。
+    /// 语义对齐系统 Window 菜单的 Center 与 Fill，但直接用 AX 设置 frame，不调用菜单项也不注入事件。
+    /// 返回是否命中标题栏并执行了动作。
+    private func cycleTitleBarLayout() -> Bool {
+        let axPoint = Coords.cocoaToAX(NSEvent.mouseLocation)
+        guard let window = AXWindow.titleBarWindow(atAX: axPoint),
+              let frame = window.frame,
+              let visible = visibleFrame(forWindowAt: frame) else { return false }
+
+        // 换了窗口，或窗口已偏离我们上次摆放的位置（用户手动移动或触发了其他布局）：重新开始循环
+        let ongoing = titleBarCycle.flatMap { cycle -> TitleBarCycle? in
+            guard CFEqual(cycle.window.element, window.element),
+                  maxOffset(frame, cycle.appliedFrame) <= Self.cycleTolerance else { return nil }
+            return cycle
+        }
+        let originalFrame = ongoing?.originalFrame ?? frame
+
+        let target: CGRect
+        let nextStage: TitleBarCycle.Stage?
+        switch ongoing?.stage {
+        case nil:
+            target = centeredFrame(of: frame, in: visible)
+            nextStage = .centered
+        case .centered?:
+            target = Coords.cocoaToAX(visible)
+            nextStage = .filled
+        case .filled?:
+            target = originalFrame
+            nextStage = nil
+        }
+
+        window.setFrame(target)
+        guard let nextStage else {
+            titleBarCycle = nil
+            return true
+        }
+        // 记录设置后窗口的实际位置：应用可能按最小尺寸或字符网格夹取，
+        // 直接存目标值会把这类夹取误判成用户手动移动，导致循环走不下去
+        titleBarCycle = TitleBarCycle(window: window, originalFrame: originalFrame,
+                                      stage: nextStage, appliedFrame: window.frame ?? target)
+        return true
+    }
+
+    /// 窗口中心所在屏的可用区域（Cocoa 坐标）；找不到所属屏时退回鼠标所在屏
+    private func visibleFrame(forWindowAt axFrame: CGRect) -> CGRect? {
+        let cocoaFrame = Coords.axToCocoa(axFrame)
+        let center = CGPoint(x: cocoaFrame.midX, y: cocoaFrame.midY)
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(center, $0.frame, false) })
+            ?? NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+            ?? NSScreen.main
+        return screen?.visibleFrame
+    }
+
+    /// 保持窗口尺寸并在可用区域内居中；尺寸超出可用区域时先夹取尺寸。返回值为 AX 坐标
+    private func centeredFrame(of axFrame: CGRect, in visible: CGRect) -> CGRect {
+        let size = CGSize(width: min(axFrame.width, visible.width),
+                          height: min(axFrame.height, visible.height))
+        let rect = CGRect(x: visible.midX - size.width / 2,
+                          y: visible.midY - size.height / 2,
+                          width: size.width, height: size.height)
+        return Coords.cocoaToAX(rect)
+    }
+
+    /// 两个矩形在位置与尺寸上的最大偏差
+    private func maxOffset(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        max(abs(a.minX - b.minX), abs(a.minY - b.minY),
+            abs(a.width - b.width), abs(a.height - b.height))
     }
 }

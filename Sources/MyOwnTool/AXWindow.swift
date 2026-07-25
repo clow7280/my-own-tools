@@ -7,19 +7,44 @@ struct AXWindow {
 
     private static let systemWide = AXUIElementCreateSystemWide()
 
+    /// 标题栏判定带高：命中点距窗口顶边不超过此值才算点在标题栏上
+    private static let titleBarHeight: CGFloat = 30
+
     /// 查找指定位置的窗口（point 为 AX 坐标）
     static func window(atAX point: CGPoint) -> AXWindow? {
-        // 缩短 AX 调用超时：事件 tap 回调内不能被无响应的目标 App 长时间阻塞
+        hitTest(atAX: point)?.window
+    }
+
+    /// 查找指定位置标题栏所属的窗口（point 为 AX 坐标）。
+    /// 命中按钮（关闭/缩放、工具栏按钮）或命中点不在窗口顶部标题栏带内时返回 nil。
+    static func titleBarWindow(atAX point: CGPoint) -> AXWindow? {
+        guard let hit = hitTest(atAX: point) else { return nil }
+        if role(of: hit.element) == kAXButtonRole { return nil }
+        guard let frame = hit.window.frame else { return nil }
+        let depth = point.y - frame.minY      // AX 坐标 minY 即窗口顶边
+        guard depth >= 0, depth <= titleBarHeight else { return nil }
+        return hit.window
+    }
+
+    /// 命中测试：返回命中元素与其所属窗口，供不同手势自行判定命中区域
+    private static func hitTest(atAX point: CGPoint) -> (element: AXUIElement, window: AXWindow)? {
+        // 缩短 AX 调用超时：事件监视器回调内不能被无响应的目标 App 长时间阻塞
         AXUIElementSetMessagingTimeout(systemWide, 0.3)
 
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success,
-              var element = hit else { return nil }
+              let element = hit else { return nil }
 
         // 排除自己的窗口（例如分区标记层）
         var pid: pid_t = 0
         if AXUIElementGetPid(element, &pid) == .success, pid == getpid() { return nil }
 
+        guard let window = resolveWindow(from: element) else { return nil }
+        return (element, window)
+    }
+
+    private static func resolveWindow(from hit: AXUIElement) -> AXWindow? {
+        var element = hit
         if role(of: element) == kAXWindowRole { return found(element) }
 
         // 命中元素通常带有所属窗口属性

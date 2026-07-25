@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-MyOwnTools 是面向 macOS 13 及以上版本的个人菜单栏应用。
+MyOwnTools 是面向 macOS 15 及以上版本的个人菜单栏应用。
 项目使用 Swift 5.9、Swift Package Manager 和 AppKit，不依赖第三方库，不使用 Storyboard 或 XIB。
 应用以 accessory 模式运行，提供 Shift 拖拽窗口吸附，以及 CPU、GPU、内存、网络和 AI 用量展示。
 
@@ -67,7 +67,7 @@ swift run MyOwnTools --ai-probe
 - Claude、Codex 与 OpenCode 接口并非稳定公共契约；
   改动端点或解析时保留分类错误状态与既有降级顺序。
 - 登录项仅支持 `.app`；不要随意修改 bundle ID 和签名逻辑，以免破坏辅助功能授权与登录项。
-- 保持 macOS 13 最低版本和零第三方依赖，除非任务明确要求变更。
+- 保持 macOS 15 最低版本和零第三方依赖，除非任务明确要求变更。
 - 不修改用户配置、凭证、签名证书或与任务无关的工作区改动。
 
 ## 修改要求
