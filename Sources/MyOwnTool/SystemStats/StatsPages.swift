@@ -69,31 +69,106 @@ enum PageUI {
     }
 }
 
-/// 卡片标题行右侧的 sparkline 时长切换：外观与普通简介小字一致（10pt 三级色右对齐），
-/// 点击整块区域循环下一档。文字用 NSTextField 保证与其他卡片的简介小字排版一致，
-/// 命中测试收敛到自身，避免标签吞掉点击。
+/// 卡片标题行右侧的 sparkline 时长切换胶囊（DESIGN.md「弹窗」）：
+/// 档位文字 + chevron 符号，底色随悬停加深，点击循环下一档。
+/// 文字用 NSTextField 保证与其他小字排版一致，命中测试收敛到自身，避免子视图吞掉点击。
+/// 宽度随档位文字长度变化，以 `trailingX` 为锚点重排，保证始终右对齐于标题行。
 final class SparklineRangeControl: NSView {
-    private let textLabel = PageUI.label(size: 10, color: .tertiaryLabelColor)
-    private let onClick: () -> Void
+    /// 胶囊高度，圆角取其一半
+    static let height: CGFloat = 15
 
-    init(onClick: @escaping () -> Void) {
+    private static let horizontalPadding: CGFloat = 6
+    private static let symbolGap: CGFloat = 3
+    private static let symbolPointSize: CGFloat = 7
+
+    private let textLabel = PageUI.label(size: 10, color: .tertiaryLabelColor)
+    private let symbolView = NSImageView()
+    private let symbolSize: NSSize
+    private let onClick: () -> Void
+    /// 胶囊右边界与顶边（父视图为翻转坐标的卡片）
+    private let trailingX: CGFloat
+    private let topY: CGFloat
+    private var trackingArea: NSTrackingArea?
+
+    private var isHovering = false {
+        didSet {
+            guard isHovering != oldValue else { return }
+            applyHoverStyle()
+        }
+    }
+
+    init(trailingX: CGFloat, topY: CGFloat, onClick: @escaping () -> Void) {
+        self.trailingX = trailingX
+        self.topY = topY
         self.onClick = onClick
+
+        let symbol = NSImage(systemSymbolName: "chevron.up.chevron.down",
+                             accessibilityDescription: "切换曲线时长")?
+            .withSymbolConfiguration(.init(pointSize: Self.symbolPointSize, weight: .semibold))
+        symbolSize = symbol?.size ?? NSSize(width: Self.symbolPointSize, height: Self.symbolPointSize)
         super.init(frame: .zero)
-        textLabel.alignment = .right
+
         addSubview(textLabel)
+        symbolView.image = symbol
+        symbolView.imageScaling = .scaleNone
+        addSubview(symbolView)
         toolTip = "点击切换曲线时长"
+        applyHoverStyle()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     var title: String = "" {
-        didSet { textLabel.stringValue = title }
+        didSet {
+            textLabel.stringValue = title
+            layoutCapsule()
+        }
     }
 
-    override func resizeSubviews(withOldSize oldSize: NSSize) {
-        super.resizeSubviews(withOldSize: oldSize)
-        textLabel.frame = bounds
+    /// 按当前文字重算胶囊宽度并贴回右边界
+    private func layoutCapsule() {
+        let text = textLabel.sizeThatFits(NSSize(width: 200, height: Self.height))
+        let textWidth = ceil(text.width)
+        let textHeight = ceil(text.height)
+        let width = Self.horizontalPadding * 2 + textWidth + Self.symbolGap + symbolSize.width
+        frame = NSRect(x: trailingX - width, y: topY, width: width, height: Self.height)
+        textLabel.frame = NSRect(x: Self.horizontalPadding, y: ((Self.height - textHeight) / 2).rounded(),
+                                 width: textWidth, height: textHeight)
+        symbolView.frame = NSRect(x: width - Self.horizontalPadding - symbolSize.width,
+                                  y: ((Self.height - symbolSize.height) / 2).rounded(),
+                                  width: symbolSize.width, height: symbolSize.height)
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
     }
+
+    private func applyHoverStyle() {
+        let color: NSColor = isHovering ? .secondaryLabelColor : .tertiaryLabelColor
+        textLabel.textColor = color
+        symbolView.contentTintColor = color
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        (isHovering ? StatsPalette.capsuleHoverBackground : StatsPalette.capsuleBackground).setFill()
+        let radius = bounds.height / 2
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+        // 弹窗 orderOut 或切换选项卡时收不到 mouseExited，重建 tracking 时按指针实际位置回正
+        isHovering = window.map { bounds.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovering = true }
+
+    override func mouseExited(with event: NSEvent) { isHovering = false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         bounds.contains(convert(point, from: superview)) ? self : nil
@@ -226,7 +301,10 @@ final class SystemPage: FlippedView {
 
     /// 最近一次收到的历史，切换时长后不等下一秒采样就能立即重绘
     private var history: [StatsSample] = []
-    private var rangeControls: [SparklineRangeControl] = []
+    /// 每张卡独立的时长档位与对应切换控件
+    private var ranges: [SparklineRange.Slot: SparklineRange] = Dictionary(
+        uniqueKeysWithValues: SparklineRange.Slot.allCases.map { ($0, SparklineRange.stored($0)) })
+    private var rangeControls: [SparklineRange.Slot: SparklineRangeControl] = [:]
 
     // 占用率卡
     private let cpuSpark = SparklineView()
@@ -285,26 +363,35 @@ final class SystemPage: FlippedView {
         return card
     }
 
-    /// 卡片标题行：左标题 + 右侧 sparkline 时长切换（外观与普通简介小字一致）
-    private func addHeader(_ title: String, in card: CardView) {
+    /// 卡片标题行：左标题 + 右侧本卡的 sparkline 时长切换胶囊。
+    /// 胶囊高 15 顶边 7，与 y=8 高 14 的标题视觉居中对齐，且不越到 y=30 的内容区
+    private func addHeader(_ title: String, in card: CardView, slot: SparklineRange.Slot) {
         let header = PageUI.label(title, size: 11, weight: .semibold, color: .secondaryLabelColor)
         header.frame = NSRect(x: PageUI.cardPadding, y: 8, width: 120, height: 14)
         card.addSubview(header)
 
-        let control = SparklineRangeControl { [weak self] in self?.cycleRange() }
-        control.frame = NSRect(x: PageUI.cardPadding + 120, y: 9,
-                               width: PageUI.innerWidth - 120, height: 13)
-        control.title = SparklineRange.current.caption
+        let control = SparklineRangeControl(trailingX: PageUI.pageWidth - PageUI.cardPadding,
+                                            topY: 7) { [weak self] in self?.cycleRange(slot) }
+        control.title = range(slot).caption
         card.addSubview(control)
-        rangeControls.append(control)
+        rangeControls[slot] = control
     }
 
-    /// 循环到下一档时长：写回 UserDefaults、同步四张卡的文案并立即用缓存历史重绘
-    private func cycleRange() {
-        SparklineRange.current = SparklineRange.current.next
-        let caption = SparklineRange.current.caption
-        rangeControls.forEach { $0.title = caption }
-        update(history)
+    private func range(_ slot: SparklineRange.Slot) -> SparklineRange { ranges[slot] ?? .oneMinute }
+
+    /// 循环该卡到下一档时长：写回 UserDefaults、更新本卡文案，并立即用缓存历史只重绘本卡
+    private func cycleRange(_ slot: SparklineRange.Slot) {
+        let next = range(slot).next
+        ranges[slot] = next
+        SparklineRange.store(next, for: slot)
+        rangeControls[slot]?.title = next.caption
+        guard let last = history.last else { return }
+        switch slot {
+        case .usage: updateUsageCard(last)
+        case .temperature: updateTempCard(last)
+        case .disk: updateDiskCard(last)
+        case .network: updateNetworkCard(last)
+        }
     }
 
     /// 指标行：标签 | sparkline | 数值；返回行底
@@ -364,7 +451,7 @@ final class SystemPage: FlippedView {
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
-        addHeader("占用率", in: card)
+        addHeader("占用率", in: card, slot: .usage)
         return top + y
     }
 
@@ -399,7 +486,7 @@ final class SystemPage: FlippedView {
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
-        addHeader("温度", in: card)
+        addHeader("温度", in: card, slot: .temperature)
         return top + y
     }
 
@@ -430,7 +517,7 @@ final class SystemPage: FlippedView {
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
-        addHeader("磁盘", in: card)
+        addHeader("磁盘", in: card, slot: .disk)
         return top + y
     }
 
@@ -470,7 +557,7 @@ final class SystemPage: FlippedView {
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
-        addHeader("网络", in: card)
+        addHeader("网络", in: card, slot: .network)
         return top + y
     }
 
@@ -479,16 +566,22 @@ final class SystemPage: FlippedView {
     func update(_ history: [StatsSample]) {
         self.history = history
         guard let last = history.last else { return }
-        let range = SparklineRange.current
+        updateUsageCard(last)
+        updateTempCard(last)
+        updateDiskCard(last)
+        updateNetworkCard(last)
+    }
 
-        // 取值时带上采样序号，分桶才能锚定绝对时间而非窗口位置
-        func mean(_ metric: (StatsSample) -> Double) -> [Double] {
-            SparklineDownsample.average(history.map { (index: $0.sequence, value: metric($0)) }, range: range)
-        }
+    /// 按某张卡自己的档位降采样；取值时带上采样序号，分桶才能锚定绝对时间而非窗口位置
+    private func mean(_ slot: SparklineRange.Slot, _ metric: (StatsSample) -> Double) -> [Double] {
+        SparklineDownsample.average(history.map { (index: $0.sequence, value: metric($0)) },
+                                    range: range(slot))
+    }
 
-        cpuSpark.update([.init(values: mean(\.cpuUsage), color: StatsPalette.cpu)])
-        gpuSpark.update([.init(values: mean(\.gpuUsage), color: StatsPalette.gpu)])
-        ramSpark.update([.init(values: mean(\.ramUsage), color: StatsPalette.ram)])
+    private func updateUsageCard(_ last: StatsSample) {
+        cpuSpark.update([.init(values: mean(.usage, \.cpuUsage), color: StatsPalette.cpu)])
+        gpuSpark.update([.init(values: mean(.usage, \.gpuUsage), color: StatsPalette.gpu)])
+        ramSpark.update([.init(values: mean(.usage, \.ramUsage), color: StatsPalette.ram)])
         cpuValue.stringValue = StatsFormat.percent(last.cpuUsage)
         gpuValue.stringValue = StatsFormat.percent(last.gpuUsage)
         ramValue.stringValue = StatsFormat.percent(last.ramUsage)
@@ -502,7 +595,11 @@ final class SystemPage: FlippedView {
             ? String(format: "负载 %.2f / %.2f / %.2f", last.loadAvg[0], last.loadAvg[1], last.loadAvg[2])
             : ""
         ramInfo.stringValue = "App \(StatsFormat.gigabytes(last.ramApp)) GB · 联动 \(StatsFormat.gigabytes(last.ramWired)) GB · SWAP \(StatsFormat.gigabytes(last.swapUsed)) GB"
+    }
 
+    /// 两条温度线同属温度卡，共用该卡档位
+    private func updateTempCard(_ last: StatsSample) {
+        let range = range(.temperature)
         updateTempSpark(cpuTempSpark, samples: history.compactMap { sample in
             sample.cpuTemp.map { (index: sample.sequence, mean: $0, peak: sample.cpuTempMax ?? $0) }
         }, range: range, meanColor: StatsPalette.cpuSoft, peakColor: StatsPalette.cpuFaint)
@@ -513,10 +610,12 @@ final class SystemPage: FlippedView {
         applyTemp(gpuTempValue, last.gpuTemp)
         diskTempValue.stringValue = tempText(last.diskTemp)
         batteryTempValue.stringValue = tempText(last.batteryTemp)
+    }
 
-        readSpark.update([.init(values: mean(\.diskRead),
+    private func updateDiskCard(_ last: StatsSample) {
+        readSpark.update([.init(values: mean(.disk, \.diskRead),
                                 color: StatsPalette.neutralPrimary, lineWidth: 1.4)])
-        writeSpark.update([.init(values: mean(\.diskWrite),
+        writeSpark.update([.init(values: mean(.disk, \.diskWrite),
                                  color: StatsPalette.neutralSecondary, lineWidth: 1.4)])
         readValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.diskRead), unit: "MB/s",
                                                                numberSize: 12.5, unitSize: 10)
@@ -524,10 +623,12 @@ final class SystemPage: FlippedView {
                                                                 numberSize: 12.5, unitSize: 10)
         readTotalLabel.stringValue = "累计读取 \(StatsFormat.dataVolume(last.diskReadTotal))"
         writeTotalLabel.stringValue = "累计写入 \(StatsFormat.dataVolume(last.diskWriteTotal))"
+    }
 
+    private func updateNetworkCard(_ last: StatsSample) {
         netSpark.update([
-            .init(values: mean(\.netDown), color: StatsPalette.neutralPrimary, lineWidth: 1.4),
-            .init(values: mean(\.netUp), color: StatsPalette.neutralSecondary, lineWidth: 1.2),
+            .init(values: mean(.network, \.netDown), color: StatsPalette.neutralPrimary, lineWidth: 1.4),
+            .init(values: mean(.network, \.netUp), color: StatsPalette.neutralSecondary, lineWidth: 1.2),
         ])
         downValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.netDown), unit: "MB/s",
                                                                numberSize: 19, unitSize: 11)

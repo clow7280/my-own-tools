@@ -2,6 +2,7 @@ import AppKit
 
 /// 极简折线 sparkline：无背景无面积填充，数据右对齐（最新值贴右缘），
 /// 不足容量时左侧留白。支持多系列叠画（网络卡片的下载/上传双线），系列共用量程。
+/// 曲线之下有 3 条横向刻度线，无竖直刻度也无边框（DESIGN.md「弹窗」）。
 final class SparklineView: NSView {
     struct Series {
         var values: [Double]
@@ -37,7 +38,13 @@ final class SparklineView: NSView {
         needsDisplay = true
     }
 
+    /// 刻度线所在的绘图区高度比例
+    private static let gridFractions: [CGFloat] = [0.25, 0.5, 0.75]
+
     override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 1, dy: 1.5)
+        // 刻度线先于曲线绘制，且不受有无数据影响：空数据时卡片区域也有可读的结构
+        drawGrid(in: rect)
         guard capacity > 1, series.contains(where: { !$0.values.isEmpty }) else { return }
 
         let all = series.flatMap { $0.values.suffix(capacity) }
@@ -53,7 +60,6 @@ final class SparklineView: NSView {
             (low, high) = (lo, Swift.max(hi, lo + 1e-9))
         }
         let range = Swift.max(high - low, 1e-9)
-        let rect = bounds.insetBy(dx: 1, dy: 1.5)
 
         for s in series where !s.values.isEmpty {
             let values = s.values.suffix(capacity)
@@ -74,21 +80,45 @@ final class SparklineView: NSView {
             line.stroke()
         }
     }
+
+    /// 3 条横贯全宽的 1pt 刻度线。用整数原点的矩形填充而非描边路径，
+    /// 使非 Retina 下也落在整像素上不发虚。
+    private func drawGrid(in rect: NSRect) {
+        guard rect.height > 4 else { return }
+        StatsPalette.sparklineGrid.setFill()
+        for fraction in Self.gridFractions {
+            let y = (rect.minY + rect.height * fraction).rounded()
+            NSRect(x: bounds.minX, y: y, width: bounds.width, height: 1).fill()
+        }
+    }
 }
 
-/// sparkline 的时间跨度：三档循环切换，弹窗系统页四张卡片共享同一档并持久化。
+/// sparkline 的时间跨度：三档循环切换，弹窗系统页四张卡片各自持久化自己的档位。
 /// rawValue 即窗口内的采样条数（采样间隔固定 1 秒）。
 enum SparklineRange: Int {
     case oneMinute = 60
     case fiveMinutes = 300
     case fifteenMinutes = 900
 
-    private static let defaultsKey = "StatsSparklineRange"
+    /// 独立持久化档位的卡片。没有全局当前档位，切换某卡不影响其他卡。
+    enum Slot: String, CaseIterable {
+        case usage, temperature, disk, network
 
-    /// 全局当前档位；UserDefaults 未写入或值非法时回落到 1 分钟
-    static var current: SparklineRange {
-        get { SparklineRange(rawValue: UserDefaults.standard.integer(forKey: defaultsKey)) ?? .oneMinute }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: defaultsKey) }
+        var defaultsKey: String { "StatsSparklineRange." + rawValue }
+    }
+
+    /// 旧版四卡共享的键，仅在某卡尚未单独存值时作为初始默认读取，不再写入
+    private static let sharedLegacyKey = "StatsSparklineRange"
+
+    /// 读取某卡档位；本卡未存值时回落到旧全局键，仍取不到则用 1 分钟
+    static func stored(_ slot: Slot) -> SparklineRange {
+        let defaults = UserDefaults.standard
+        if let own = SparklineRange(rawValue: defaults.integer(forKey: slot.defaultsKey)) { return own }
+        return SparklineRange(rawValue: defaults.integer(forKey: sharedLegacyKey)) ?? .oneMinute
+    }
+
+    static func store(_ range: SparklineRange, for slot: Slot) {
+        UserDefaults.standard.set(range.rawValue, forKey: slot.defaultsKey)
     }
 
     /// 卡片标题行右侧的切换文案
