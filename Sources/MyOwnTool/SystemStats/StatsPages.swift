@@ -33,7 +33,8 @@ enum PageUI {
     /// 卡片纵向间距
     static let cardGap: CGFloat = 10
 
-    // 指标行三列：标签 42 | 曲线自适应 | 数值（普通 52 / 带单位 76），列间距 10
+    // 指标行三列：标签 42 | 曲线自适应 | 数值（普通 52 / 带单位 76），列间距 10。
+    // 曲线列尾部由 SparklineView 自己让出 34pt 最值刻度列，行高与各列宽度不受影响
     static let rowLabelWidth: CGFloat = 42
     static let rowGap: CGFloat = 10
 
@@ -69,8 +70,8 @@ enum PageUI {
     }
 }
 
-/// 卡片标题行右侧的 sparkline 时长切换胶囊（DESIGN.md「弹窗」）：
-/// 档位文字 + chevron 符号，底色随悬停加深，点击循环下一档。
+/// 卡片标题行右侧的 sparkline 时长胶囊（DESIGN.md「弹窗」）：
+/// 档位文字 + chevron 符号，底色随悬停加深，点击在胶囊正下方弹出三档下拉菜单。
 /// 文字用 NSTextField 保证与其他小字排版一致，命中测试收敛到自身，避免子视图吞掉点击。
 /// 宽度随档位文字长度变化，以 `trailingX` 为锚点重排，保证始终右对齐于标题行。
 final class SparklineRangeControl: NSView {
@@ -80,11 +81,13 @@ final class SparklineRangeControl: NSView {
     private static let horizontalPadding: CGFloat = 6
     private static let symbolGap: CGFloat = 3
     private static let symbolPointSize: CGFloat = 7
+    /// 下拉菜单顶边与胶囊底边的间距
+    private static let menuGap: CGFloat = 3
 
     private let textLabel = PageUI.label(size: 10, color: .tertiaryLabelColor)
     private let symbolView = NSImageView()
     private let symbolSize: NSSize
-    private let onClick: () -> Void
+    private let onSelect: (SparklineRange) -> Void
     /// 胶囊右边界与顶边（父视图为翻转坐标的卡片）
     private let trailingX: CGFloat
     private let topY: CGFloat
@@ -97,13 +100,13 @@ final class SparklineRangeControl: NSView {
         }
     }
 
-    init(trailingX: CGFloat, topY: CGFloat, onClick: @escaping () -> Void) {
+    init(trailingX: CGFloat, topY: CGFloat, onSelect: @escaping (SparklineRange) -> Void) {
         self.trailingX = trailingX
         self.topY = topY
-        self.onClick = onClick
+        self.onSelect = onSelect
 
         let symbol = NSImage(systemSymbolName: "chevron.up.chevron.down",
-                             accessibilityDescription: "切换曲线时长")?
+                             accessibilityDescription: "选择曲线时长")?
             .withSymbolConfiguration(.init(pointSize: Self.symbolPointSize, weight: .semibold))
         symbolSize = symbol?.size ?? NSSize(width: Self.symbolPointSize, height: Self.symbolPointSize)
         super.init(frame: .zero)
@@ -112,15 +115,19 @@ final class SparklineRangeControl: NSView {
         symbolView.image = symbol
         symbolView.imageScaling = .scaleNone
         addSubview(symbolView)
-        toolTip = "点击切换曲线时长"
+        toolTip = "点击选择曲线时长"
         applyHoverStyle()
+        // 初始化内的赋值不触发 didSet，直接铺一次文字与尺寸
+        textLabel.stringValue = range.caption
+        layoutCapsule()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    var title: String = "" {
+    /// 当前档位：驱动胶囊文字与下拉菜单的勾选项，赋值不回调 `onSelect`
+    var range: SparklineRange = .oneMinute {
         didSet {
-            textLabel.stringValue = title
+            textLabel.stringValue = range.caption
             layoutCapsule()
         }
     }
@@ -162,7 +169,11 @@ final class SparklineRangeControl: NSView {
                                   owner: self)
         addTrackingArea(area)
         trackingArea = area
-        // 弹窗 orderOut 或切换选项卡时收不到 mouseExited，重建 tracking 时按指针实际位置回正
+        syncHover()
+    }
+
+    /// 弹窗 orderOut、切换选项卡或菜单模态跟踪期间收不到 mouseExited，按指针实际位置回正
+    private func syncHover() {
         isHovering = window.map { bounds.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
     }
 
@@ -174,7 +185,25 @@ final class SparklineRangeControl: NSView {
         bounds.contains(convert(point, from: superview)) ? self : nil
     }
 
-    override func mouseDown(with event: NSEvent) { onClick() }
+    /// 弹出三档下拉，当前档打勾。本视图未翻转，负 y 即胶囊下方；
+    /// `positioning: nil` 让菜单左上角落在该点
+    override func mouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        for option in SparklineRange.allCases {
+            let item = NSMenuItem(title: option.caption, action: #selector(pickRange(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = option.rawValue
+            item.state = option == range ? .on : .off
+            menu.addItem(item)
+        }
+        _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -Self.menuGap), in: self)
+        syncHover()
+    }
+
+    @objc private func pickRange(_ sender: NSMenuItem) {
+        guard let picked = SparklineRange(rawValue: sender.tag) else { return }
+        onSelect(picked)
+    }
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .pointingHand)
@@ -363,7 +392,7 @@ final class SystemPage: FlippedView {
         return card
     }
 
-    /// 卡片标题行：左标题 + 右侧本卡的 sparkline 时长切换胶囊。
+    /// 卡片标题行：左标题 + 右侧本卡的 sparkline 时长胶囊。
     /// 胶囊高 15 顶边 7，与 y=8 高 14 的标题视觉居中对齐，且不越到 y=30 的内容区
     private func addHeader(_ title: String, in card: CardView, slot: SparklineRange.Slot) {
         let header = PageUI.label(title, size: 11, weight: .semibold, color: .secondaryLabelColor)
@@ -371,20 +400,22 @@ final class SystemPage: FlippedView {
         card.addSubview(header)
 
         let control = SparklineRangeControl(trailingX: PageUI.pageWidth - PageUI.cardPadding,
-                                            topY: 7) { [weak self] in self?.cycleRange(slot) }
-        control.title = range(slot).caption
+                                            topY: 7) { [weak self] picked in
+            self?.selectRange(picked, for: slot)
+        }
+        control.range = range(slot)
         card.addSubview(control)
         rangeControls[slot] = control
     }
 
     private func range(_ slot: SparklineRange.Slot) -> SparklineRange { ranges[slot] ?? .oneMinute }
 
-    /// 循环该卡到下一档时长：写回 UserDefaults、更新本卡文案，并立即用缓存历史只重绘本卡
-    private func cycleRange(_ slot: SparklineRange.Slot) {
-        let next = range(slot).next
-        ranges[slot] = next
-        SparklineRange.store(next, for: slot)
-        rangeControls[slot]?.title = next.caption
+    /// 把该卡切到选中的档位：写回 UserDefaults、更新本卡文案，并立即用缓存历史只重绘本卡
+    private func selectRange(_ picked: SparklineRange, for slot: SparklineRange.Slot) {
+        guard range(slot) != picked else { return }
+        ranges[slot] = picked
+        SparklineRange.store(picked, for: slot)
+        rangeControls[slot]?.range = picked
         guard let last = history.last else { return }
         switch slot {
         case .usage: updateUsageCard(last)
@@ -422,7 +453,7 @@ final class SystemPage: FlippedView {
         let subIndent = PageUI.cardPadding + PageUI.rowLabelWidth + PageUI.rowGap
 
         let card = CardView()
-        for spark in [cpuSpark, gpuSpark, ramSpark] { spark.scale = .fixed(max: 1) }
+        for spark in [cpuSpark, gpuSpark, ramSpark] { spark.scaleFormat = .percent }
 
         y = addMetricRow("CPU", spark: cpuSpark, sparkHeight: 24, value: cpuValue,
                          valueWidth: 52, y: y, rowHeight: 24, in: card)
@@ -458,8 +489,8 @@ final class SystemPage: FlippedView {
     private func buildTempCard(top: CGFloat) -> CGFloat {
         var y: CGFloat = 30
         let card = CardView()
-        cpuTempSpark.scale = .band(padding: 2)
-        gpuTempSpark.scale = .band(padding: 2)
+        cpuTempSpark.scaleFormat = .celsius
+        gpuTempSpark.scaleFormat = .celsius
 
         y = addMetricRow("CPU", spark: cpuTempSpark, sparkHeight: 20, value: cpuTempValue,
                          valueWidth: 52, y: y, rowHeight: 20, in: card)
@@ -493,8 +524,8 @@ final class SystemPage: FlippedView {
     private func buildDiskCard(top: CGFloat) -> CGFloat {
         var y: CGFloat = 30
         let card = CardView()
-        readSpark.scale = .autoMax(floor: 20_000_000)   // 20 MB/s 下限防空闲噪声放大
-        writeSpark.scale = .autoMax(floor: 20_000_000)
+        readSpark.scaleFormat = .rate
+        writeSpark.scaleFormat = .rate
 
         y = addMetricRow("读取", spark: readSpark, sparkHeight: 20, value: readValue,
                          valueWidth: 76, y: y, rowHeight: 20, in: card)
@@ -524,7 +555,7 @@ final class SystemPage: FlippedView {
     private func buildNetworkCard(top: CGFloat) -> CGFloat {
         var y: CGFloat = 30
         let card = CardView()
-        netSpark.scale = .autoMax(floor: 100_000)   // 100 KB/s 下限
+        netSpark.scaleFormat = .rate
 
         let columnWidth = PageUI.innerWidth / 2
         for (index, (title, value)) in [("下载", downValue), ("上传", upValue)].enumerated() {

@@ -39,9 +39,6 @@ enum StatsPalette {
     static let neutralPrimary = dynamic(0x000000, 0.6, 0xFFFFFF, 0.65)
     static let neutralSecondary = dynamic(0x000000, 0.32, 0xFFFFFF, 0.35)
 
-    // sparkline 的 25/50/75% 水平刻度线：比任何曲线都弱，只做高度参考
-    static let sparklineGrid = dynamic(0x000000, 0.05, 0xFFFFFF, 0.07)
-
     // 时长切换胶囊底色（常态 / 悬停）
     static let capsuleBackground = dynamic(0x000000, 0.05, 0xFFFFFF, 0.08)
     static let capsuleHoverBackground = dynamic(0x000000, 0.09, 0xFFFFFF, 0.13)

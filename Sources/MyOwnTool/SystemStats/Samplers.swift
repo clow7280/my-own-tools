@@ -49,6 +49,13 @@ enum StatsFormat {
         return ("0", "B")
     }
 
+    /// 字节/秒 → 紧凑速率文本（如 "312M"、"1.2M"、"0B"）：
+    /// 沿用菜单栏网速的 3 字符数字加单位规则，供 sparkline 右侧刻度列这类窄列使用
+    static func compactSpeed(_ bps: Double) -> String {
+        let (number, unit) = menuSpeed(bps)
+        return number + unit
+    }
+
     /// 字节/秒 → MB/s 数字文本（单位由 UI 单独绘制）
     static func mbps(_ bps: Double) -> String {
         let value = bps / 1_000_000

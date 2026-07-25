@@ -1,8 +1,11 @@
 import AppKit
 
-/// 极简折线 sparkline：无背景无面积填充，数据右对齐（最新值贴右缘），
-/// 不足容量时左侧留白。支持多系列叠画（网络卡片的下载/上传双线），系列共用量程。
-/// 曲线之下有 3 条横向刻度线，无竖直刻度也无边框（DESIGN.md「弹窗」）。
+/// 极简折线 sparkline：无背景无面积填充，无刻度线也无边框，数据右对齐（最新值贴右缘），
+/// 不足容量时左侧留白。支持多系列叠画（网络卡片的下载/上传双线）。
+///
+/// 纵轴量程取当前窗口内全部系列绘制点的最小值到最大值，曲线纵向填满绘图区：
+/// 固定 0~1 或 0~峰值的量程会把空闲期压成贴底的直线，看不出起伏。
+/// 绝对读数由绘图区右侧的刻度列补回，上下各标一个当前窗口的最值（DESIGN.md「弹窗」）。
 final class SparklineView: NSView {
     struct Series {
         var values: [Double]
@@ -10,19 +13,32 @@ final class SparklineView: NSView {
         var lineWidth: CGFloat = 1.5
     }
 
-    /// 纵轴量程
-    enum Scale {
-        case fixed(max: Double)         // 0~max（占用率）
-        case autoMax(floor: Double)     // 0~峰值（速率类），floor 防微小波动被放大
-        case band(padding: Double)      // 数据 min−p ~ max+p（温度，突出相对变化）
+    /// 右侧刻度列的数值格式，按卡片类型选择
+    enum ScaleFormat {
+        case percent    // 0~1 占用率 → "87%"
+        case celsius    // ℃ → "72°"
+        case rate       // 字节/秒 → "312M"
+
+        func text(_ value: Double) -> String {
+            switch self {
+            case .percent: return StatsFormat.percent(value)
+            case .celsius: return String(format: "%.0f°", value)
+            case .rate: return StatsFormat.compactSpeed(value)
+            }
+        }
     }
 
     /// 绘制点数固定 60：更长的时间跨度靠降采样成同样多的桶实现，
     /// 曲线密度与横向分辨率不随时长档位变化
     static let pointCapacity = 60
 
+    /// 右侧刻度列占用的宽度，含与曲线之间的间距；视图自身的宽度不变，缩窄的是绘图区
+    static let scaleColumnWidth: CGFloat = 34
+    private static let scaleGap: CGFloat = 4
+    private static let scaleFont = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular)
+
     let capacity: Int
-    var scale: Scale = .fixed(max: 1)
+    var scaleFormat: ScaleFormat = .percent
 
     private var series: [Series] = []
 
@@ -38,37 +54,27 @@ final class SparklineView: NSView {
         needsDisplay = true
     }
 
-    /// 刻度线所在的绘图区高度比例
-    private static let gridFractions: [CGFloat] = [0.25, 0.5, 0.75]
-
     override func draw(_ dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: 1, dy: 1.5)
-        // 刻度线先于曲线绘制，且不受有无数据影响：空数据时卡片区域也有可读的结构
-        drawGrid(in: rect)
-        guard capacity > 1, series.contains(where: { !$0.values.isEmpty }) else { return }
+        let area = bounds.insetBy(dx: 1, dy: 1.5)
+        let plot = NSRect(x: area.minX, y: area.minY,
+                          width: Swift.max(area.width - Self.scaleColumnWidth, 1),
+                          height: area.height)
+        guard capacity > 1, plot.height > 0 else { return }
 
+        // 量程与刻度都取实际绘制的降采样点，多系列共用
         let all = series.flatMap { $0.values.suffix(capacity) }
-        let (low, high): (Double, Double)
-        switch scale {
-        case .fixed(let max):
-            (low, high) = (0, max)
-        case .autoMax(let floor):
-            (low, high) = (0, Swift.max(all.max() ?? 0, floor))
-        case .band(let padding):
-            let lo = (all.min() ?? 0) - padding
-            let hi = (all.max() ?? 0) + padding
-            (low, high) = (lo, Swift.max(hi, lo + 1e-9))
-        }
-        let range = Swift.max(high - low, 1e-9)
+        guard let low = all.min(), let high = all.max() else { return }
+        let span = high - low
 
         for s in series where !s.values.isEmpty {
             let values = s.values.suffix(capacity)
             let startSlot = capacity - values.count
             var points: [NSPoint] = []
             for (i, v) in values.enumerated() {
-                let x = rect.minX + rect.width * CGFloat(startSlot + i) / CGFloat(capacity - 1)
-                let y = rect.minY + rect.height * CGFloat(min(max((v - low) / range, 0), 1))
-                points.append(NSPoint(x: x, y: y))
+                let x = plot.minX + plot.width * CGFloat(startSlot + i) / CGFloat(capacity - 1)
+                // 全部点相等（如磁盘长时间空闲）时量程退化，统一画在垂直中线而不是贴底
+                let fraction = span > 1e-9 ? CGFloat((v - low) / span) : 0.5
+                points.append(NSPoint(x: x, y: plot.minY + plot.height * fraction))
             }
             let line = NSBezierPath()
             line.move(to: points[0])
@@ -79,23 +85,31 @@ final class SparklineView: NSView {
             line.lineCapStyle = .round
             line.stroke()
         }
+
+        drawScale(low: low, high: high, in: plot)
     }
 
-    /// 3 条横贯全宽的 1pt 刻度线。用整数原点的矩形填充而非描边路径，
-    /// 使非 Retina 下也落在整像素上不发虚。
-    private func drawGrid(in rect: NSRect) {
-        guard rect.height > 4 else { return }
-        StatsPalette.sparklineGrid.setFill()
-        for fraction in Self.gridFractions {
-            let y = (rect.minY + rect.height * fraction).rounded()
-            NSRect(x: bounds.minX, y: y, width: bounds.width, height: 1).fill()
-        }
+    /// 绘图区右侧的最值刻度：上缘最大值、下缘最小值，与曲线填满的上下边一一对应。
+    /// 两行左对齐贴着曲线，四张卡一致。
+    private func drawScale(low: Double, high: Double, in plot: NSRect) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: Self.scaleFont,
+            .foregroundColor: NSColor.labelColor,
+        ]
+        let x = plot.maxX + Self.scaleGap
+        let width = Swift.max(bounds.maxX - 1 - x, 0)
+        let lineHeight = ceil(Self.scaleFont.ascender - Self.scaleFont.descender)
+        guard width > 0, plot.height >= lineHeight else { return }
+        NSAttributedString(string: scaleFormat.text(high), attributes: attributes)
+            .draw(in: NSRect(x: x, y: plot.maxY - lineHeight, width: width, height: lineHeight))
+        NSAttributedString(string: scaleFormat.text(low), attributes: attributes)
+            .draw(in: NSRect(x: x, y: plot.minY, width: width, height: lineHeight))
     }
 }
 
-/// sparkline 的时间跨度：三档循环切换，弹窗系统页四张卡片各自持久化自己的档位。
-/// rawValue 即窗口内的采样条数（采样间隔固定 1 秒）。
-enum SparklineRange: Int {
+/// sparkline 的时间跨度：胶囊下拉三选一，弹窗系统页四张卡片各自持久化自己的档位。
+/// rawValue 即窗口内的采样条数（采样间隔固定 1 秒），`allCases` 顺序即下拉菜单顺序。
+enum SparklineRange: Int, CaseIterable {
     case oneMinute = 60
     case fiveMinutes = 300
     case fifteenMinutes = 900
@@ -107,34 +121,21 @@ enum SparklineRange: Int {
         var defaultsKey: String { "StatsSparklineRange." + rawValue }
     }
 
-    /// 旧版四卡共享的键，仅在某卡尚未单独存值时作为初始默认读取，不再写入
-    private static let sharedLegacyKey = "StatsSparklineRange"
-
-    /// 读取某卡档位；本卡未存值时回落到旧全局键，仍取不到则用 1 分钟
+    /// 读取某卡档位；未存值时默认近 1 分钟
     static func stored(_ slot: Slot) -> SparklineRange {
-        let defaults = UserDefaults.standard
-        if let own = SparklineRange(rawValue: defaults.integer(forKey: slot.defaultsKey)) { return own }
-        return SparklineRange(rawValue: defaults.integer(forKey: sharedLegacyKey)) ?? .oneMinute
+        SparklineRange(rawValue: UserDefaults.standard.integer(forKey: slot.defaultsKey)) ?? .oneMinute
     }
 
     static func store(_ range: SparklineRange, for slot: Slot) {
         UserDefaults.standard.set(range.rawValue, forKey: slot.defaultsKey)
     }
 
-    /// 卡片标题行右侧的切换文案
+    /// 胶囊与下拉菜单项的文案
     var caption: String {
         switch self {
         case .oneMinute: return "近 1 分钟"
         case .fiveMinutes: return "近 5 分钟"
         case .fifteenMinutes: return "近 15 分钟"
-        }
-    }
-
-    var next: SparklineRange {
-        switch self {
-        case .oneMinute: return .fiveMinutes
-        case .fiveMinutes: return .fifteenMinutes
-        case .fifteenMinutes: return .oneMinute
         }
     }
 
