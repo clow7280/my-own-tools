@@ -11,6 +11,7 @@ enum AIHealth: Equatable {
 struct AIProviderState {
     var snapshot: AIUsageSnapshot?
     var source: AIUsageSource?
+    /// 最近一次拉取的发起时刻，只用于自动刷新的间隔判断，不参与展示。
     var lastAttemptAt: Date?
     var lastSuccessAt: Date?
     var lastDataAt: Date?

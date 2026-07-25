@@ -10,6 +10,14 @@ final class AIUsageMonitor {
 
     private static let intervalKey = "AIUsageRefreshInterval"
 
+    /// 刷新定时器允许系统推迟触发的时间。
+    private static let timerLeeway: TimeInterval = 10
+
+    /// 跳过判断的余量。重复定时器的下一次 deadline 锚定在初始 deadline 上，
+    /// 某次触发被 leeway 推迟后，它与下一次触发的间隔会短于设定周期，
+    /// 余量必须覆盖这段抖动，否则整个周期会被误判为“刚刚刷新过”而跳过。
+    private static let tickTolerance: TimeInterval = 15
+
     static var interval: TimeInterval {
         get {
             let stored = UserDefaults.standard.double(forKey: self.intervalKey)
@@ -117,6 +125,9 @@ final class AIUsageMonitor {
         self.generations[providerID, default: 0] += 1
         let generation = self.generations[providerID, default: 0]
         self.states[providerID]?.isRefreshing = true
+        // 按发起时刻计时。若等到完成回调再记录，一次耗时数秒的拉取就会让下一个
+        // 定时器周期落在最小间隔之内被跳过，实际刷新退化成两倍周期。
+        self.states[providerID]?.lastAttemptAt = Date()
         self.onUpdate?()
 
         let task = descriptor.pipeline.fetch(context: context) { [weak self] outcome in
@@ -131,7 +142,10 @@ final class AIUsageMonitor {
 
     private func installRefreshTimer(firstDeadline: DispatchTime) {
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: firstDeadline, repeating: self.currentInterval, leeway: .seconds(10))
+        timer.schedule(
+            deadline: firstDeadline,
+            repeating: self.currentInterval,
+            leeway: .seconds(Int(Self.timerLeeway)))
         timer.setEventHandler { [weak self] in
             Task { @MainActor in
                 self?.refreshAll(bypassUserInterval: false, context: .automatic)
@@ -151,7 +165,8 @@ final class AIUsageMonitor {
                 let required = bypassUserInterval
                     ? descriptor.refreshPolicy.minimumAutomaticInterval
                     : max(self.currentInterval, descriptor.refreshPolicy.minimumAutomaticInterval)
-                guard now.timeIntervalSince(lastAttempt) >= required - 1 else { continue }
+                guard now.timeIntervalSince(lastAttempt) >= required - Self.tickTolerance
+                else { continue }
             }
             self.refresh(descriptor.id, context: context)
         }
@@ -161,7 +176,6 @@ final class AIUsageMonitor {
         var state = self.states[providerID] ?? AIProviderState()
         let now = Date()
         state.isRefreshing = false
-        state.lastAttemptAt = now
         state.attempts = outcome.attempts
 
         switch outcome.result {
