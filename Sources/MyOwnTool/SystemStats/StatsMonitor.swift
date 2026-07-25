@@ -27,6 +27,11 @@ final class StatsMonitor {
 
     /// 主线程访问：最近的采样历史（含最新一条）
     private(set) var history: [StatsSample] = []
+    /// 主线程访问：下一条样本的累计序号。单调递增且永不重置，
+    /// 历史在 historyCapacity 处截断后 history.count 会封顶，不能当作时间轴用。
+    /// 睡眠期间定时器挂起、不产生样本，序号原地停住，唤醒后继续递增：
+    /// 分桶只依赖序号的连续性，因此不会在唤醒处切出异常桶
+    private var nextSequence = 0
     /// 主线程回调：每秒一次，带最新样本
     var onSample: ((StatsSample) -> Void)?
 
@@ -122,11 +127,14 @@ final class StatsMonitor {
         }
 
         DispatchQueue.main.async {
-            self.history.append(sample)
+            var stored = sample
+            stored.sequence = self.nextSequence
+            self.nextSequence += 1
+            self.history.append(stored)
             if self.history.count > Self.historyCapacity {
                 self.history.removeFirst(self.history.count - Self.historyCapacity)
             }
-            self.onSample?(sample)
+            self.onSample?(stored)
         }
     }
 

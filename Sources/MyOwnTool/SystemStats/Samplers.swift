@@ -3,6 +3,9 @@ import IOKit
 
 /// 一次完整采样的结果快照
 struct StatsSample {
+    /// 累计采样序号，由 StatsMonitor 逐条递增分配；sparkline 用它把桶边界锚在绝对时间上，
+    /// 不随窗口滑动或历史截断改变（见 SparklineDownsample）
+    var sequence: Int = 0
     var cpuUsage: Double = 0        // 0~1
     var cpuECore: Double?           // E 核平均占用；无异构核信息（如 Intel）时为 nil
     var cpuPCore: Double?

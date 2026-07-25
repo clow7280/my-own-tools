@@ -116,30 +116,48 @@ enum SparklineRange: Int {
 }
 
 /// 把 1 秒粒度的历史压成 sparkline 的绘制点。
-/// 从最新一条往回分桶，保证最新数据始终落在最右侧；历史不足时桶数变少，由 SparklineView 左侧留白。
+///
+/// 桶边界锚定采样的绝对序号：第 b 个桶固定覆盖序号 `[b*size, (b+1)*size)`，
+/// 一条采样落进哪个桶只由它自己的序号决定，与窗口滑动无关。
+/// 曾按窗口末尾往回切桶，窗口每秒滑一条会让所有桶边界相对数据移动一格，
+/// 于是每个绘制点都变成滑动平均、整条曲线每秒重组一次，重组周期正好等于桶宽，
+/// 5 分钟与 15 分钟档因此肉眼可见地周期性形变。
+///
+/// 最右一个桶是正在填充的部分桶，每来一条新采样就重算，桶满后曲线整体左移一格。
+/// 历史不足时桶数变少，由 SparklineView 左侧留白；窗口跨桶边界时最左桶也可能不满，
+/// 桶数会多出一个，交由 SparklineView 只取最后 `pointCapacity` 个点裁掉。
 enum SparklineDownsample {
-    static func average(_ values: [Double], range: SparklineRange) -> [Double] {
-        buckets(values, range: range) { $0.reduce(0, +) / Double($0.count) }
+    /// 带绝对序号的输入点；序号来自 StatsSample.sequence
+    typealias Point = (index: Int, value: Double)
+
+    static func average(_ points: [Point], range: SparklineRange) -> [Double] {
+        buckets(points, range: range) { $0.reduce(0, +) / Double($0.count) }
     }
 
-    static func maximum(_ values: [Double], range: SparklineRange) -> [Double] {
-        buckets(values, range: range) { $0.max() ?? 0 }
+    static func maximum(_ points: [Point], range: SparklineRange) -> [Double] {
+        buckets(points, range: range) { $0.max() ?? 0 }
     }
 
-    private static func buckets(_ values: [Double], range: SparklineRange,
-                                combine: (ArraySlice<Double>) -> Double) -> [Double] {
-        let window = Array(values.suffix(range.sampleCount))
-        guard !window.isEmpty else { return [] }
+    private static func buckets(_ points: [Point], range: SparklineRange,
+                                combine: ([Double]) -> Double) -> [Double] {
+        let window = points.suffix(range.sampleCount)
+        guard let first = window.first else { return [] }
         let size = range.bucketSize
-        guard size > 1 else { return window }
+        guard size > 1 else { return window.map(\.value) }
 
-        var points: [Double] = []
-        var end = window.count
-        while end > 0 {
-            let start = max(0, end - size)
-            points.append(combine(window[start..<end]))
-            end = start
+        var result: [Double] = []
+        var group: [Double] = []
+        var current = first.index / size
+        for point in window {
+            let bucket = point.index / size
+            if bucket != current {
+                if !group.isEmpty { result.append(combine(group)) }
+                group.removeAll(keepingCapacity: true)
+                current = bucket
+            }
+            group.append(point.value)
         }
-        return points.reversed()
+        if !group.isEmpty { result.append(combine(group)) }
+        return result
     }
 }

@@ -481,11 +481,14 @@ final class SystemPage: FlippedView {
         guard let last = history.last else { return }
         let range = SparklineRange.current
 
-        func mean(_ values: [Double]) -> [Double] { SparklineDownsample.average(values, range: range) }
+        // 取值时带上采样序号，分桶才能锚定绝对时间而非窗口位置
+        func mean(_ metric: (StatsSample) -> Double) -> [Double] {
+            SparklineDownsample.average(history.map { (index: $0.sequence, value: metric($0)) }, range: range)
+        }
 
-        cpuSpark.update([.init(values: mean(history.map(\.cpuUsage)), color: StatsPalette.cpu)])
-        gpuSpark.update([.init(values: mean(history.map(\.gpuUsage)), color: StatsPalette.gpu)])
-        ramSpark.update([.init(values: mean(history.map(\.ramUsage)), color: StatsPalette.ram)])
+        cpuSpark.update([.init(values: mean(\.cpuUsage), color: StatsPalette.cpu)])
+        gpuSpark.update([.init(values: mean(\.gpuUsage), color: StatsPalette.gpu)])
+        ramSpark.update([.init(values: mean(\.ramUsage), color: StatsPalette.ram)])
         cpuValue.stringValue = StatsFormat.percent(last.cpuUsage)
         gpuValue.stringValue = StatsFormat.percent(last.gpuUsage)
         ramValue.stringValue = StatsFormat.percent(last.ramUsage)
@@ -501,19 +504,19 @@ final class SystemPage: FlippedView {
         ramInfo.stringValue = "App \(StatsFormat.gigabytes(last.ramApp)) GB · 联动 \(StatsFormat.gigabytes(last.ramWired)) GB · SWAP \(StatsFormat.gigabytes(last.swapUsed)) GB"
 
         updateTempSpark(cpuTempSpark, samples: history.compactMap { sample in
-            sample.cpuTemp.map { (mean: $0, peak: sample.cpuTempMax ?? $0) }
+            sample.cpuTemp.map { (index: sample.sequence, mean: $0, peak: sample.cpuTempMax ?? $0) }
         }, range: range, meanColor: StatsPalette.cpuSoft, peakColor: StatsPalette.cpuFaint)
         updateTempSpark(gpuTempSpark, samples: history.compactMap { sample in
-            sample.gpuTemp.map { (mean: $0, peak: sample.gpuTempMax ?? $0) }
+            sample.gpuTemp.map { (index: sample.sequence, mean: $0, peak: sample.gpuTempMax ?? $0) }
         }, range: range, meanColor: StatsPalette.gpuSoft, peakColor: StatsPalette.gpuFaint)
         applyTemp(cpuTempValue, last.cpuTemp)
         applyTemp(gpuTempValue, last.gpuTemp)
         diskTempValue.stringValue = tempText(last.diskTemp)
         batteryTempValue.stringValue = tempText(last.batteryTemp)
 
-        readSpark.update([.init(values: mean(history.map(\.diskRead)),
+        readSpark.update([.init(values: mean(\.diskRead),
                                 color: StatsPalette.neutralPrimary, lineWidth: 1.4)])
-        writeSpark.update([.init(values: mean(history.map(\.diskWrite)),
+        writeSpark.update([.init(values: mean(\.diskWrite),
                                  color: StatsPalette.neutralSecondary, lineWidth: 1.4)])
         readValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.diskRead), unit: "MB/s",
                                                                numberSize: 12.5, unitSize: 10)
@@ -523,8 +526,8 @@ final class SystemPage: FlippedView {
         writeTotalLabel.stringValue = "累计写入 \(StatsFormat.dataVolume(last.diskWriteTotal))"
 
         netSpark.update([
-            .init(values: mean(history.map(\.netDown)), color: StatsPalette.neutralPrimary, lineWidth: 1.4),
-            .init(values: mean(history.map(\.netUp)), color: StatsPalette.neutralSecondary, lineWidth: 1.2),
+            .init(values: mean(\.netDown), color: StatsPalette.neutralPrimary, lineWidth: 1.4),
+            .init(values: mean(\.netUp), color: StatsPalette.neutralSecondary, lineWidth: 1.2),
         ])
         downValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.netDown), unit: "MB/s",
                                                                numberSize: 19, unitSize: 11)
@@ -535,16 +538,17 @@ final class SystemPage: FlippedView {
 
     /// 温度 sparkline：均值线（桶内平均）+ 峰值线（桶内最高核心温度，更细更弱）。
     /// 峰均差全部小于均值窗口平均值的 `peakVisibilityRatio` 时省略峰值线（DESIGN.md「弹窗」）。
-    private func updateTempSpark(_ spark: SparklineView, samples: [(mean: Double, peak: Double)],
+    private func updateTempSpark(_ spark: SparklineView, samples: [(index: Int, mean: Double, peak: Double)],
                                  range: SparklineRange, meanColor: NSColor, peakColor: NSColor) {
-        let means = SparklineDownsample.average(samples.map(\.mean), range: range)
+        // 两条线共用同一套采样序号，桶边界完全对齐
+        let means = SparklineDownsample.average(samples.map { (index: $0.index, value: $0.mean) }, range: range)
         guard !means.isEmpty else {
             spark.update([])
             return
         }
         // 峰值线排在均值线之前，绘制时被均值线覆盖，保持弱线在下
         var series: [SparklineView.Series] = []
-        let peaks = SparklineDownsample.maximum(samples.map(\.peak), range: range)
+        let peaks = SparklineDownsample.maximum(samples.map { (index: $0.index, value: $0.peak) }, range: range)
         let average = means.reduce(0, +) / Double(means.count)
         let spread = zip(peaks, means).map { $0 - $1 }.max() ?? 0
         if spread >= average * Self.peakVisibilityRatio {
