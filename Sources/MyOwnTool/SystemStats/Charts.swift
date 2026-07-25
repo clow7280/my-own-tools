@@ -16,12 +16,16 @@ final class SparklineView: NSView {
         case band(padding: Double)      // 数据 min−p ~ max+p（温度，突出相对变化）
     }
 
+    /// 绘制点数固定 60：更长的时间跨度靠降采样成同样多的桶实现，
+    /// 曲线密度与横向分辨率不随时长档位变化
+    static let pointCapacity = 60
+
     let capacity: Int
     var scale: Scale = .fixed(max: 1)
 
     private var series: [Series] = []
 
-    init(capacity: Int) {
+    init(capacity: Int = pointCapacity) {
         self.capacity = capacity
         super.init(frame: .zero)
     }
@@ -69,5 +73,73 @@ final class SparklineView: NSView {
             line.lineCapStyle = .round
             line.stroke()
         }
+    }
+}
+
+/// sparkline 的时间跨度：三档循环切换，弹窗系统页四张卡片共享同一档并持久化。
+/// rawValue 即窗口内的采样条数（采样间隔固定 1 秒）。
+enum SparklineRange: Int {
+    case oneMinute = 60
+    case fiveMinutes = 300
+    case fifteenMinutes = 900
+
+    private static let defaultsKey = "StatsSparklineRange"
+
+    /// 全局当前档位；UserDefaults 未写入或值非法时回落到 1 分钟
+    static var current: SparklineRange {
+        get { SparklineRange(rawValue: UserDefaults.standard.integer(forKey: defaultsKey)) ?? .oneMinute }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: defaultsKey) }
+    }
+
+    /// 卡片标题行右侧的切换文案
+    var caption: String {
+        switch self {
+        case .oneMinute: return "近 1 分钟"
+        case .fiveMinutes: return "近 5 分钟"
+        case .fifteenMinutes: return "近 15 分钟"
+        }
+    }
+
+    var next: SparklineRange {
+        switch self {
+        case .oneMinute: return .fiveMinutes
+        case .fiveMinutes: return .fifteenMinutes
+        case .fifteenMinutes: return .oneMinute
+        }
+    }
+
+    /// 窗口内采样条数
+    var sampleCount: Int { rawValue }
+
+    /// 每个绘制点合并多少条采样
+    var bucketSize: Int { Swift.max(1, sampleCount / SparklineView.pointCapacity) }
+}
+
+/// 把 1 秒粒度的历史压成 sparkline 的绘制点。
+/// 从最新一条往回分桶，保证最新数据始终落在最右侧；历史不足时桶数变少，由 SparklineView 左侧留白。
+enum SparklineDownsample {
+    static func average(_ values: [Double], range: SparklineRange) -> [Double] {
+        buckets(values, range: range) { $0.reduce(0, +) / Double($0.count) }
+    }
+
+    static func maximum(_ values: [Double], range: SparklineRange) -> [Double] {
+        buckets(values, range: range) { $0.max() ?? 0 }
+    }
+
+    private static func buckets(_ values: [Double], range: SparklineRange,
+                                combine: (ArraySlice<Double>) -> Double) -> [Double] {
+        let window = Array(values.suffix(range.sampleCount))
+        guard !window.isEmpty else { return [] }
+        let size = range.bucketSize
+        guard size > 1 else { return window }
+
+        var points: [Double] = []
+        var end = window.count
+        while end > 0 {
+            let start = max(0, end - size)
+            points.append(combine(window[start..<end]))
+            end = start
+        }
+        return points.reversed()
     }
 }

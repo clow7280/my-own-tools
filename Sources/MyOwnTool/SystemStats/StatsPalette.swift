@@ -9,9 +9,13 @@ enum StatsPalette {
     static let gpu = dynamic(0x9A5CD0, 1, 0xB57BE8, 1)          // 紫
     static let ram = dynamic(0x00A2C7, 1, 0x2BC2E4, 1)          // 青
 
-    // 指标色（弱化）：温度 sparkline
+    // 指标色（弱化）：温度 sparkline 均值线
     static let cpuSoft = dynamic(0x3478F6, 0.55, 0x5C97FF, 0.6)
     static let gpuSoft = dynamic(0x9A5CD0, 0.55, 0xB57BE8, 0.6)
+
+    // 指标色（更弱）：温度 sparkline 上叠加的峰值线，压在均值线之下不抢视线
+    static let cpuFaint = dynamic(0x3478F6, 0.3, 0x5C97FF, 0.35)
+    static let gpuFaint = dynamic(0x9A5CD0, 0.3, 0xB57BE8, 0.35)
 
     // AI 品牌强调色：同一提供方的全部订阅周期统一使用标准色；深变体只给专属模型与徽章
     static let chatGPT = dynamic(0x10A37F, 1, 0x1FBF93, 1)      // OpenAI 青绿

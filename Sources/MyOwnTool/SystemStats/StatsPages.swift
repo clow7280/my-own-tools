@@ -69,6 +69,43 @@ enum PageUI {
     }
 }
 
+/// 卡片标题行右侧的 sparkline 时长切换：外观与普通简介小字一致（10pt 三级色右对齐），
+/// 点击整块区域循环下一档。文字用 NSTextField 保证与其他卡片的简介小字排版一致，
+/// 命中测试收敛到自身，避免标签吞掉点击。
+final class SparklineRangeControl: NSView {
+    private let textLabel = PageUI.label(size: 10, color: .tertiaryLabelColor)
+    private let onClick: () -> Void
+
+    init(onClick: @escaping () -> Void) {
+        self.onClick = onClick
+        super.init(frame: .zero)
+        textLabel.alignment = .right
+        addSubview(textLabel)
+        toolTip = "点击切换曲线时长"
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    var title: String = "" {
+        didSet { textLabel.stringValue = title }
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        textLabel.frame = bounds
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(convert(point, from: superview)) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) { onClick() }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+
 /// 细横向用量条：轨道 + 从左向右填充；striped 时画品牌色斜纹（5 小时限额取消态）
 final class UsageBar: NSView {
     var fraction: Double = 0 { didSet { needsDisplay = true } }
@@ -183,10 +220,18 @@ final class BadgeView: NSView {
 final class SystemPage: FlippedView {
     private(set) var contentHeight: CGFloat = 0
 
+    /// 峰值线显示阈值：窗口内的峰均差全部小于均值窗口平均值的 5% 时不画峰值线，
+    /// 避免两条曲线几乎重合、只剩描边噪声
+    private static let peakVisibilityRatio = 0.05
+
+    /// 最近一次收到的历史，切换时长后不等下一秒采样就能立即重绘
+    private var history: [StatsSample] = []
+    private var rangeControls: [SparklineRangeControl] = []
+
     // 占用率卡
-    private let cpuSpark = SparklineView(capacity: StatsMonitor.historyCapacity)
-    private let gpuSpark = SparklineView(capacity: StatsMonitor.historyCapacity)
-    private let ramSpark = SparklineView(capacity: StatsMonitor.historyCapacity)
+    private let cpuSpark = SparklineView()
+    private let gpuSpark = SparklineView()
+    private let ramSpark = SparklineView()
     private let cpuValue = PageUI.label(size: 14, weight: .semibold, mono: true)
     private let gpuValue = PageUI.label(size: 14, weight: .semibold, mono: true)
     private let ramValue = PageUI.label(size: 14, weight: .semibold, mono: true)
@@ -195,18 +240,16 @@ final class SystemPage: FlippedView {
     private let ramInfo = PageUI.label(size: 10, mono: true, color: .tertiaryLabelColor)
 
     // 温度卡
-    private let cpuTempSpark = SparklineView(capacity: StatsMonitor.historyCapacity)
-    private let gpuTempSpark = SparklineView(capacity: StatsMonitor.historyCapacity)
+    private let cpuTempSpark = SparklineView()
+    private let gpuTempSpark = SparklineView()
     private let cpuTempValue = PageUI.label(size: 13, weight: .semibold, mono: true)
     private let gpuTempValue = PageUI.label(size: 13, weight: .semibold, mono: true)
-    private let cpuPeakValue = PageUI.label(size: 12, weight: .semibold, mono: true)
-    private let gpuPeakValue = PageUI.label(size: 12, weight: .semibold, mono: true)
     private let diskTempValue = PageUI.label(size: 12, weight: .semibold, mono: true)
     private let batteryTempValue = PageUI.label(size: 12, weight: .semibold, mono: true)
 
     // 磁盘卡
-    private let readSpark = SparklineView(capacity: StatsMonitor.historyCapacity)
-    private let writeSpark = SparklineView(capacity: StatsMonitor.historyCapacity)
+    private let readSpark = SparklineView()
+    private let writeSpark = SparklineView()
     private let readValue = PageUI.label(size: 12.5, weight: .semibold)
     private let writeValue = PageUI.label(size: 12.5, weight: .semibold)
     private let readTotalLabel = PageUI.label(size: 10, mono: true, color: .tertiaryLabelColor)
@@ -215,7 +258,7 @@ final class SystemPage: FlippedView {
     // 网络卡
     private let downValue = PageUI.label(size: 19, weight: .semibold)
     private let upValue = PageUI.label(size: 19, weight: .semibold)
-    private let netSpark = SparklineView(capacity: StatsMonitor.historyCapacity)
+    private let netSpark = SparklineView()
     private let interfaceValue = PageUI.label("—", size: 12, weight: .medium)
     private let localIPValue = PageUI.label("—", size: 12, weight: .medium, mono: true)
     private let publicIPValue = PageUI.label("—", size: 12, weight: .medium, mono: true)
@@ -242,15 +285,26 @@ final class SystemPage: FlippedView {
         return card
     }
 
-    /// 卡片标题行：左标题 + 右简介（右对齐次级小字）
-    private func addHeader(_ title: String, caption: String, in card: CardView) {
+    /// 卡片标题行：左标题 + 右侧 sparkline 时长切换（外观与普通简介小字一致）
+    private func addHeader(_ title: String, in card: CardView) {
         let header = PageUI.label(title, size: 11, weight: .semibold, color: .secondaryLabelColor)
         header.frame = NSRect(x: PageUI.cardPadding, y: 8, width: 120, height: 14)
         card.addSubview(header)
-        let hint = PageUI.label(caption, size: 10, color: .tertiaryLabelColor)
-        hint.alignment = .right
-        hint.frame = NSRect(x: PageUI.cardPadding + 120, y: 9, width: PageUI.innerWidth - 120, height: 13)
-        card.addSubview(hint)
+
+        let control = SparklineRangeControl { [weak self] in self?.cycleRange() }
+        control.frame = NSRect(x: PageUI.cardPadding + 120, y: 9,
+                               width: PageUI.innerWidth - 120, height: 13)
+        control.title = SparklineRange.current.caption
+        card.addSubview(control)
+        rangeControls.append(control)
+    }
+
+    /// 循环到下一档时长：写回 UserDefaults、同步四张卡的文案并立即用缓存历史重绘
+    private func cycleRange() {
+        SparklineRange.current = SparklineRange.current.next
+        let caption = SparklineRange.current.caption
+        rangeControls.forEach { $0.title = caption }
+        update(history)
     }
 
     /// 指标行：标签 | sparkline | 数值；返回行底
@@ -310,7 +364,7 @@ final class SystemPage: FlippedView {
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
-        addHeader("占用率", caption: "近 1 分钟", in: card)
+        addHeader("占用率", in: card)
         return top + y
     }
 
@@ -331,9 +385,9 @@ final class SystemPage: FlippedView {
         PageUI.separator(in: card, y: y)
         y += 7
 
-        let cellWidth = PageUI.innerWidth / 4
-        for (index, (title, value)) in [("CPU 峰值", cpuPeakValue), ("GPU 峰值", gpuPeakValue),
-                                        ("磁盘", diskTempValue), ("电池平均", batteryTempValue)].enumerated() {
+        // 峰值已画进 sparkline，底部只留磁盘与电池两格
+        let cellWidth = PageUI.innerWidth / 2
+        for (index, (title, value)) in [("磁盘", diskTempValue), ("电池平均", batteryTempValue)].enumerated() {
             let x = PageUI.cardPadding + cellWidth * CGFloat(index)
             let caption = PageUI.label(title, size: 9.5, color: .tertiaryLabelColor)
             caption.frame = NSRect(x: x, y: y, width: cellWidth - 4, height: 12)
@@ -345,7 +399,7 @@ final class SystemPage: FlippedView {
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
-        addHeader("温度", caption: "1 分钟平均核心温度", in: card)
+        addHeader("温度", in: card)
         return top + y
     }
 
@@ -376,12 +430,12 @@ final class SystemPage: FlippedView {
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
-        addHeader("磁盘", caption: "内置 SSD 读写", in: card)
+        addHeader("磁盘", in: card)
         return top + y
     }
 
     private func buildNetworkCard(top: CGFloat) -> CGFloat {
-        var y: CGFloat = 10
+        var y: CGFloat = 30
         let card = CardView()
         netSpark.scale = .autoMax(floor: 100_000)   // 100 KB/s 下限
 
@@ -416,17 +470,22 @@ final class SystemPage: FlippedView {
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
+        addHeader("网络", in: card)
         return top + y
     }
 
     // MARK: 刷新
 
     func update(_ history: [StatsSample]) {
+        self.history = history
         guard let last = history.last else { return }
+        let range = SparklineRange.current
 
-        cpuSpark.update([.init(values: history.map(\.cpuUsage), color: StatsPalette.cpu)])
-        gpuSpark.update([.init(values: history.map(\.gpuUsage), color: StatsPalette.gpu)])
-        ramSpark.update([.init(values: history.map(\.ramUsage), color: StatsPalette.ram)])
+        func mean(_ values: [Double]) -> [Double] { SparklineDownsample.average(values, range: range) }
+
+        cpuSpark.update([.init(values: mean(history.map(\.cpuUsage)), color: StatsPalette.cpu)])
+        gpuSpark.update([.init(values: mean(history.map(\.gpuUsage)), color: StatsPalette.gpu)])
+        ramSpark.update([.init(values: mean(history.map(\.ramUsage)), color: StatsPalette.ram)])
         cpuValue.stringValue = StatsFormat.percent(last.cpuUsage)
         gpuValue.stringValue = StatsFormat.percent(last.gpuUsage)
         ramValue.stringValue = StatsFormat.percent(last.ramUsage)
@@ -441,17 +500,21 @@ final class SystemPage: FlippedView {
             : ""
         ramInfo.stringValue = "App \(StatsFormat.gigabytes(last.ramApp)) GB · 联动 \(StatsFormat.gigabytes(last.ramWired)) GB · SWAP \(StatsFormat.gigabytes(last.swapUsed)) GB"
 
-        cpuTempSpark.update([.init(values: history.compactMap(\.cpuTemp), color: StatsPalette.cpuSoft)])
-        gpuTempSpark.update([.init(values: history.compactMap(\.gpuTemp), color: StatsPalette.gpuSoft)])
+        updateTempSpark(cpuTempSpark, samples: history.compactMap { sample in
+            sample.cpuTemp.map { (mean: $0, peak: sample.cpuTempMax ?? $0) }
+        }, range: range, meanColor: StatsPalette.cpuSoft, peakColor: StatsPalette.cpuFaint)
+        updateTempSpark(gpuTempSpark, samples: history.compactMap { sample in
+            sample.gpuTemp.map { (mean: $0, peak: sample.gpuTempMax ?? $0) }
+        }, range: range, meanColor: StatsPalette.gpuSoft, peakColor: StatsPalette.gpuFaint)
         applyTemp(cpuTempValue, last.cpuTemp)
         applyTemp(gpuTempValue, last.gpuTemp)
-        cpuPeakValue.stringValue = tempText(last.cpuTempMax)
-        gpuPeakValue.stringValue = tempText(last.gpuTempMax)
         diskTempValue.stringValue = tempText(last.diskTemp)
         batteryTempValue.stringValue = tempText(last.batteryTemp)
 
-        readSpark.update([.init(values: history.map(\.diskRead), color: StatsPalette.neutralPrimary, lineWidth: 1.4)])
-        writeSpark.update([.init(values: history.map(\.diskWrite), color: StatsPalette.neutralSecondary, lineWidth: 1.4)])
+        readSpark.update([.init(values: mean(history.map(\.diskRead)),
+                                color: StatsPalette.neutralPrimary, lineWidth: 1.4)])
+        writeSpark.update([.init(values: mean(history.map(\.diskWrite)),
+                                 color: StatsPalette.neutralSecondary, lineWidth: 1.4)])
         readValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.diskRead), unit: "MB/s",
                                                                numberSize: 12.5, unitSize: 10)
         writeValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.diskWrite), unit: "MB/s",
@@ -460,14 +523,35 @@ final class SystemPage: FlippedView {
         writeTotalLabel.stringValue = "累计写入 \(StatsFormat.dataVolume(last.diskWriteTotal))"
 
         netSpark.update([
-            .init(values: history.map(\.netDown), color: StatsPalette.neutralPrimary, lineWidth: 1.4),
-            .init(values: history.map(\.netUp), color: StatsPalette.neutralSecondary, lineWidth: 1.2),
+            .init(values: mean(history.map(\.netDown)), color: StatsPalette.neutralPrimary, lineWidth: 1.4),
+            .init(values: mean(history.map(\.netUp)), color: StatsPalette.neutralSecondary, lineWidth: 1.2),
         ])
         downValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.netDown), unit: "MB/s",
                                                                numberSize: 19, unitSize: 11)
         upValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.netUp), unit: "MB/s",
                                                              numberSize: 19, unitSize: 11,
                                                              color: .secondaryLabelColor)
+    }
+
+    /// 温度 sparkline：均值线（桶内平均）+ 峰值线（桶内最高核心温度，更细更弱）。
+    /// 峰均差全部小于均值窗口平均值的 `peakVisibilityRatio` 时省略峰值线（DESIGN.md「弹窗」）。
+    private func updateTempSpark(_ spark: SparklineView, samples: [(mean: Double, peak: Double)],
+                                 range: SparklineRange, meanColor: NSColor, peakColor: NSColor) {
+        let means = SparklineDownsample.average(samples.map(\.mean), range: range)
+        guard !means.isEmpty else {
+            spark.update([])
+            return
+        }
+        // 峰值线排在均值线之前，绘制时被均值线覆盖，保持弱线在下
+        var series: [SparklineView.Series] = []
+        let peaks = SparklineDownsample.maximum(samples.map(\.peak), range: range)
+        let average = means.reduce(0, +) / Double(means.count)
+        let spread = zip(peaks, means).map { $0 - $1 }.max() ?? 0
+        if spread >= average * Self.peakVisibilityRatio {
+            series.append(.init(values: peaks, color: peakColor, lineWidth: 1))
+        }
+        series.append(.init(values: means, color: meanColor))
+        spark.update(series)
     }
 
     /// 温度数值按分级着色（DESIGN.md 温度分级）；常温与无数据用默认标签色

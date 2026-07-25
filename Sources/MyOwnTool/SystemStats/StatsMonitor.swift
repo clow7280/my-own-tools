@@ -1,10 +1,11 @@
 import AppKit
 
-/// 系统状态监视器：后台队列每秒采样一次，主线程回调；保留最近 1 分钟历史。
+/// 系统状态监视器：后台队列每秒采样一次，主线程回调；保留最近 15 分钟历史。
 /// 用 DispatchSourceTimer 而非 Timer，不受菜单/事件追踪 runloop mode 影响；系统睡眠时暂停。
 final class StatsMonitor {
-    /// 1 秒 × 60 条历史；弹窗 sparkline 显示完整 1 分钟窗口
-    static let historyCapacity = 60
+    /// 1 秒 × 900 条历史，覆盖 sparkline 最长的 15 分钟档；
+    /// 弹窗按当前时长把历史降采样成 `SparklineView.pointCapacity` 个点，不直接整段绘制
+    static let historyCapacity = 900
     static let sampleInterval: TimeInterval = 1
 
     private let cpu = CPUSampler()
