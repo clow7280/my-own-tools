@@ -10,6 +10,7 @@ private enum AIUsageCoreChecks {
             try self.checkModelsAndRegistry()
             try self.checkClaudeParser()
             try self.checkCodexParser()
+            try self.checkCodexPlanExtractor()
             try await self.checkCodexRolloutFallback()
             try self.checkOpenCodeParser()
             try self.checkOpenCodeLocalReader()
@@ -83,15 +84,113 @@ private enum AIUsageCoreChecks {
             spendOnly.extraWindows.first?.id.rawValue == "claude-spend-limit"
                 && spendOnly.extraWindows.first?.fraction == 0.25,
             "Claude spend-limit-only account")
-        do {
-            _ = try ClaudeUsageParser.parse(
-                data: Data(#"{"five_hour":{"unknown":10},"seven_day":{"utilization":33}}"#.utf8),
-                rawPlan: nil,
-                multiplier: nil)
-            throw CheckFailure("Claude malformed session must not mean notEnforced")
-        } catch let failure as AIUsageFailure {
-            try self.expect(failure.kind == .schemaChanged, "Claude malformed session failure")
+        let malformedSession = try ClaudeUsageParser.parse(
+            data: Data(#"{"five_hour":{"unknown":10},"seven_day":{"utilization":33}}"#.utf8),
+            rawPlan: nil,
+            multiplier: nil)
+        try self.expect(
+            malformedSession.window(.session)?.value == .unavailable,
+            "Claude malformed session must not mean notEnforced")
+        try self.expect(
+            malformedSession.window(.weekly)?.fraction == 0.33,
+            "Claude malformed session must not hide the weekly window")
+
+        try self.checkClaudeLimitsFallback()
+    }
+
+    /// 服务端会间歇性把 `utilization` 写成 null，此时窗口必须由 `limits[]` 或美元用量兜底。
+    private static func checkClaudeLimitsFallback() throws {
+        let nulled = try ClaudeUsageParser.parse(data: Data(#"""
+        {
+          "five_hour": {
+            "utilization": null, "used_dollars": null, "limit_dollars": null, "resets_at": null
+          },
+          "seven_day": {"utilization": null, "resets_at": null},
+          "seven_day_opus": null,
+          "limits": [{
+            "kind": "session", "group": "session", "percent": 62.5, "is_active": true,
+            "severity": "none", "scope": null, "resets_at": "2026-07-25T18:00:00Z"
+          }, {
+            "kind": "weekly_all", "group": "weekly", "percent": 12, "is_active": true,
+            "severity": "none", "scope": null, "resets_at": "2026-07-30T00:00:00Z"
+          }]
         }
+        """#.utf8), rawPlan: "default_claude_max_5x", multiplier: 5)
+        try self.expect(nulled.window(.session)?.fraction == 0.625, "Claude limits session fallback")
+        try self.expect(nulled.window(.weekly)?.fraction == 0.12, "Claude limits weekly fallback")
+        try self.expect(
+            nulled.window(.session)?.resetsAt == self.date("2026-07-25T18:00:00Z")
+                && nulled.window(.weekly)?.resetsAt == self.date("2026-07-30T00:00:00Z"),
+            "Claude limits fallback keeps resets_at")
+        try self.expect(nulled.plan?.displayName == "Max 5×", "Claude Max 5× plan")
+
+        let missingObjects = try ClaudeUsageParser.parse(data: Data(#"""
+        {"limits": [
+          {"kind": "session", "group": "session", "percent": 8},
+          {"kind": "weekly_all", "group": "weekly", "percent": 9}
+        ]}
+        """#.utf8), rawPlan: nil, multiplier: nil)
+        try self.expect(
+            missingObjects.window(.session)?.fraction == 0.08
+                && missingObjects.window(.weekly)?.fraction == 0.09,
+            "Claude limits without window objects")
+
+        let dollars = try ClaudeUsageParser.parse(data: Data(#"""
+        {
+          "five_hour": {
+            "utilization": null, "used_dollars": 3, "limit_dollars": 12,
+            "remaining_dollars": 9, "resets_at": "2026-07-25T18:00:00Z"
+          },
+          "seven_day": {"used_dollars": 10, "limit_dollars": 40}
+        }
+        """#.utf8), rawPlan: nil, multiplier: nil)
+        try self.expect(dollars.window(.session)?.fraction == 0.25, "Claude dollar ratio session")
+        try self.expect(dollars.window(.weekly)?.fraction == 0.25, "Claude dollar ratio weekly")
+
+        do {
+            _ = try ClaudeUsageParser.parse(data: Data(#"""
+            {"five_hour":{"utilization":null},"seven_day":null,"limits":[],
+             "spend":{"total_dollars":12},"extra_usage":{"is_enabled":false}}
+            """#.utf8), rawPlan: nil, multiplier: nil)
+            throw CheckFailure("Claude response without any window must fail")
+        } catch let failure as AIUsageFailure {
+            try self.expect(failure.kind == .schemaChanged, "Claude no-window failure kind")
+        }
+
+        let mixed = try ClaudeUsageParser.parse(data: Data(#"""
+        {
+          "five_hour": {"utilization": 10, "resets_at": "2026-07-25T18:00:00Z"},
+          "seven_day": {"utilization": 20},
+          "limits": [
+            {"kind": "session", "group": "session", "percent": 99},
+            {"kind": "weekly_all", "group": "weekly", "percent": 98},
+            {
+              "kind": "weekly_scoped", "group": "weekly", "percent": 44,
+              "scope": {"model": {"id": "claude-opus-4", "display_name": "Opus"}}
+            },
+            {
+              "kind": "weekly_scoped", "group": "weekly", "percent": 77,
+              "scope": {"model": {"display_name": "All models"}}
+            }
+          ]
+        }
+        """#.utf8), rawPlan: nil, multiplier: nil)
+        try self.expect(
+            mixed.window(.session)?.fraction == 0.1 && mixed.window(.weekly)?.fraction == 0.2,
+            "Claude window objects outrank limits candidates")
+        try self.expect(
+            mixed.windows.count == 2 && mixed.extraWindows.count == 1,
+            "Claude limits must not duplicate main windows")
+        try self.expect(
+            mixed.extraWindows[0].id.rawValue == "claude-claude-opus-4"
+                && mixed.extraWindows[0].fraction == 0.44,
+            "Claude scoped window keeps model identity")
+    }
+
+    private static func date(_ text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: text)
     }
 
     private static func checkCodexParser() throws {
@@ -225,6 +324,57 @@ private enum AIUsageCoreChecks {
         try self.expect(
             unknownDuration.extraWindows.first?.title == "9 小时窗口",
             "Codex unknown duration remains visible")
+    }
+
+    /// 只用自造的 JWT 校验本地套餐提取，不读取真实 `auth.json`，也不解析签名。
+    private static func checkCodexPlanExtractor() throws {
+        let valid = self.fakeIDToken(payload: #"""
+        {"https://api.openai.com/auth":{"chatgpt_plan_type":"pro","chatgpt_account_id":"unused"}}
+        """#)
+        try self.expect(
+            CodexPlanExtractor.plan(fromIDToken: valid) == "pro",
+            "Codex id_token plan extraction")
+
+        let plus = self.fakeIDToken(payload: #"{"https://api.openai.com/auth":{"chatgpt_plan_type":" plus "}}"#)
+        try self.expect(
+            CodexPlanExtractor.plan(fromIDToken: plus) == "plus",
+            "Codex id_token plan trimming")
+
+        let cases: [(String?, String)] = [
+            (nil, "missing token"),
+            ("", "empty token"),
+            ("header-only", "token without payload segment"),
+            ("header..signature", "token with empty payload"),
+            ("header.@@@@.signature", "token with invalid base64url"),
+            (self.fakeIDToken(payload: "not json"), "token with invalid JSON payload"),
+            (self.fakeIDToken(payload: "[1,2,3]"), "token with non-object payload"),
+            (self.fakeIDToken(payload: #"{"https://api.openai.com/auth":{}}"#), "claim without plan"),
+            (self.fakeIDToken(payload: #"{"https://api.openai.com/auth":{"chatgpt_plan_type":42}}"#),
+             "non-string plan"),
+            (self.fakeIDToken(payload: #"{"https://api.openai.com/auth":{"chatgpt_plan_type":"  "}}"#),
+             "blank plan"),
+            (String(repeating: "a", count: 9_000), "oversized token"),
+        ]
+        for (token, label) in cases {
+            try self.expect(
+                CodexPlanExtractor.plan(fromIDToken: token) == nil,
+                "Codex id_token must reject \(label)")
+        }
+    }
+
+    private static func fakeIDToken(payload: String) -> String {
+        [
+            self.base64URL(Data(#"{"alg":"none","typ":"JWT"}"#.utf8)),
+            self.base64URL(Data(payload.utf8)),
+            self.base64URL(Data("unverified".utf8)),
+        ].joined(separator: ".")
+    }
+
+    private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     private static func checkOpenCodeParser() throws {
@@ -380,10 +530,37 @@ private enum AIUsageCoreChecks {
 
         let boundary = try await descriptor.pipeline.fetch().result.get()
         try self.expect(boundary.snapshot.window(.session)?.fraction == 0.82, "Codex 1 MiB line boundary")
+        try self.expect(boundary.snapshot.plan?.displayName == "Pro", "Codex rollout snapshot plan")
+
+        // 本地会话快照没有 plan_type 时，订阅徽章改由 auth.json 的 id_token 兜底。
+        let planHome = root.appendingPathComponent("plan", isDirectory: true)
+        let planSessions = planHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: planSessions, withIntermediateDirectories: true)
+        _ = setenv("CODEX_HOME", planHome.path, 1)
+        try (self.codexRolloutLine(
+            timestamp: now.addingTimeInterval(-600),
+            usedPercent: 55,
+            planType: nil) + Data([0x0A]))
+            .write(to: planSessions.appendingPathComponent("rollout-plan.jsonl"))
+        let idToken = self.fakeIDToken(
+            payload: #"{"https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}"#)
+        try Data(#"{"tokens":{"id_token":"\#(idToken)"}}"#.utf8)
+            .write(to: planHome.appendingPathComponent("auth.json"))
+
+        let planned = try await descriptor.pipeline.fetch().result.get()
+        try self.expect(planned.source.quality == .cached, "Codex rollout plan fallback quality")
+        try self.expect(
+            planned.snapshot.plan?.displayName == "Plus",
+            "Codex rollout plan falls back to the local id_token")
     }
 
-    private static func codexRolloutLine(timestamp: Date, usedPercent: Int) -> Data {
-        Data(#"{"timestamp":\#(timestamp.timeIntervalSince1970),"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":\#(usedPercent),"window_minutes":300},"secondary":{"used_percent":40,"window_minutes":10080},"plan_type":"pro"}}}"#.utf8)
+    private static func codexRolloutLine(
+        timestamp: Date,
+        usedPercent: Int,
+        planType: String? = "pro") -> Data
+    {
+        let plan = planType.map { #","plan_type":"\#($0)""# } ?? ""
+        return Data(#"{"timestamp":\#(timestamp.timeIntervalSince1970),"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":\#(usedPercent),"window_minutes":300},"secondary":{"used_percent":40,"window_minutes":10080}\#(plan)}}}"#.utf8)
     }
 
     private static func checkOpenCodeLocalReader() throws {

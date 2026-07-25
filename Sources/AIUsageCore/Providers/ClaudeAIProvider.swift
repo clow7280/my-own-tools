@@ -221,59 +221,49 @@ public enum ClaudeUsageParser {
             throw AIUsageFailure(.schemaChanged, "Claude 返回了无法解析的用量数据")
         }
 
-        var windows: [AIUsageWindow] = []
-        let fiveHourExplicitlyAbsent = json["five_hour"] == nil || json["five_hour"] is NSNull
-        if !fiveHourExplicitlyAbsent {
-            guard let five = json["five_hour"] as? [String: Any],
-                  let fraction = AIJSON.fraction(percent: five["utilization"] ?? five["used_percent"])
-            else {
-                throw AIUsageFailure(.schemaChanged, "Claude 的 5 小时窗口格式已变化")
-            }
-            windows.append(AIUsageWindow(
-                id: .session,
-                value: .measured(fraction),
-                resetsAt: AIJSON.date(five["resets_at"] ?? five["reset_at"])))
-        }
+        let limits = (json["limits"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []
+        let sessionCandidate = self.candidate(in: limits, kind: "session")
+        let weeklyCandidate = self.candidate(in: limits, kind: "weekly_all")
 
-        let sevenDayExplicitlyAbsent = json["seven_day"] == nil || json["seven_day"] is NSNull
-        if !sevenDayExplicitlyAbsent {
-            guard let seven = json["seven_day"] as? [String: Any],
-                  let fraction = AIJSON.fraction(percent: seven["utilization"] ?? seven["used_percent"])
-            else {
-                throw AIUsageFailure(.schemaChanged, "Claude 的 7 天窗口格式已变化")
-            }
-            windows.append(AIUsageWindow(
-                id: .weekly,
-                value: .measured(fraction),
-                resetsAt: AIJSON.date(seven["resets_at"] ?? seven["reset_at"])))
+        var windows: [AIUsageWindow] = []
+        let fiveHourExplicitlyAbsent = self.isAbsent(json["five_hour"])
+        if let session = self.window(
+            id: .session,
+            raw: json["five_hour"],
+            candidate: sessionCandidate)
+        {
+            windows.append(session)
+        }
+        if let weekly = self.window(id: .weekly, raw: json["seven_day"], candidate: weeklyCandidate) {
+            windows.append(weekly)
         }
 
         // Claude 可能暂时取消 5 小时限制；显式建模，避免 nil 同时表示缺数据。
+        // 对象存在但字段取不到值属于数据缺失，已在上面记为 unavailable，不会走到这里。
         if fiveHourExplicitlyAbsent,
-           windows.contains(where: { $0.id == .weekly })
+           sessionCandidate == nil,
+           windows.contains(where: { $0.id == .weekly && $0.hasData })
         {
             windows.insert(AIUsageWindow(id: .session, value: .notEnforced), at: 0)
         }
 
         var extras: [AIUsageWindow] = []
-        if let limits = json["limits"] as? [Any] {
-            for limit in limits.compactMap({ $0 as? [String: Any] })
-            where (limit["kind"] as? String) == "weekly_scoped"
-                && (limit["group"] as? String) == "weekly"
-            {
-                guard let scope = limit["scope"] as? [String: Any],
-                      let model = scope["model"] as? [String: Any],
-                      let name = self.nonEmpty(model["display_name"] as? String),
-                      !self.isAllModels(name: name, id: model["id"] as? String),
-                      let fraction = AIJSON.fraction(percent: limit["percent"] ?? limit["utilization"])
-                else { continue }
-                self.appendExtra(
-                    key: self.nonEmpty(model["id"] as? String) ?? name,
-                    title: name + " 专属",
-                    raw: limit,
-                    fraction: fraction,
-                    extras: &extras)
-            }
+        for limit in limits
+        where (limit["kind"] as? String) == "weekly_scoped"
+            && (limit["group"] as? String) == "weekly"
+        {
+            guard let scope = limit["scope"] as? [String: Any],
+                  let model = scope["model"] as? [String: Any],
+                  let name = self.nonEmpty(model["display_name"] as? String),
+                  !self.isAllModels(name: name, id: model["id"] as? String),
+                  let fraction = self.fraction(limit, keys: ["percent", "utilization"])
+            else { continue }
+            self.appendExtra(
+                key: self.nonEmpty(model["id"] as? String) ?? name,
+                title: name + " 专属",
+                raw: limit,
+                fraction: fraction,
+                extras: &extras)
         }
         let legacyDefinitions: [(keys: [String], title: String)] = [
             (["seven_day_sonnet"], "Sonnet 专属"),
@@ -289,8 +279,7 @@ public enum ClaudeUsageParser {
                 guard let raw = json[key] as? [String: Any] else { return nil }
                 return (key, raw)
             }).first,
-                  let fraction = AIJSON.fraction(
-                      percent: populated.1["utilization"] ?? populated.1["used_percent"])
+                  let fraction = self.fraction(populated.1, keys: ["utilization", "used_percent"])
             else { continue }
             self.appendExtra(
                 key: populated.0,
@@ -321,6 +310,71 @@ public enum ClaudeUsageParser {
             capturedAt: now)
     }
 
+    /// `limits[]` 中与 5 小时、7 天主窗口对应的候选值，用于 `utilization` 间歇为 null 时兜底。
+    private struct LimitCandidate {
+        let fraction: Double
+        let resetsAt: Date?
+    }
+
+    private static func candidate(in limits: [[String: Any]], kind: String) -> LimitCandidate? {
+        for limit in limits where (limit["kind"] as? String) == kind {
+            guard let fraction = self.fraction(limit, keys: ["percent", "utilization", "used_percent"])
+            else { continue }
+            return LimitCandidate(fraction: fraction, resetsAt: self.resetDate(limit))
+        }
+        return nil
+    }
+
+    /// 取值顺序为对象自身的百分数、`limits[]` 候选、美元用量比值；
+    /// 对象存在但三者都取不到时记为 unavailable，只让该窗口缺数据，不否定整份响应。
+    private static func window(
+        id: AIUsageWindowID,
+        raw: Any?,
+        candidate: LimitCandidate?) -> AIUsageWindow?
+    {
+        guard !self.isAbsent(raw) else {
+            guard let candidate else { return nil }
+            return AIUsageWindow(
+                id: id,
+                value: .measured(candidate.fraction),
+                resetsAt: candidate.resetsAt)
+        }
+        let object = raw as? [String: Any]
+        let fraction = object.flatMap { self.fraction($0, keys: ["utilization", "used_percent"]) }
+            ?? candidate?.fraction
+            ?? object.flatMap(self.dollarFraction)
+        return AIUsageWindow(
+            id: id,
+            value: fraction.map(AIUsageWindow.Value.measured) ?? .unavailable,
+            resetsAt: object.flatMap(self.resetDate) ?? candidate?.resetsAt)
+    }
+
+    private static func isAbsent(_ raw: Any?) -> Bool {
+        raw == nil || raw is NSNull
+    }
+
+    /// 服务端会间歇性把百分数写成 null，因此逐个候选键取值，而不是用 `??` 让 null 短路。
+    private static func fraction(_ raw: [String: Any], keys: [String]) -> Double? {
+        for key in keys {
+            if let value = raw[key], let fraction = AIJSON.fraction(percent: value) { return fraction }
+        }
+        return nil
+    }
+
+    private static func dollarFraction(_ raw: [String: Any]) -> Double? {
+        guard let used = AIJSON.number(raw["used_dollars"]), used.isFinite, used >= 0,
+              let limit = AIJSON.number(raw["limit_dollars"]), limit.isFinite, limit > 0
+        else { return nil }
+        return min(max(used / limit, 0), 1)
+    }
+
+    private static func resetDate(_ raw: [String: Any]) -> Date? {
+        for key in ["resets_at", "reset_at"] {
+            if let value = raw[key], let date = AIJSON.date(value) { return date }
+        }
+        return nil
+    }
+
     private static func appendExtra(
         key: String,
         title: String,
@@ -334,7 +388,7 @@ public enum ClaudeUsageParser {
             id: id,
             title: title,
             value: .measured(fraction),
-            resetsAt: AIJSON.date(raw["resets_at"] ?? raw["reset_at"])))
+            resetsAt: self.resetDate(raw)))
     }
 
     private static func isAllModels(name: String, id: String?) -> Bool {

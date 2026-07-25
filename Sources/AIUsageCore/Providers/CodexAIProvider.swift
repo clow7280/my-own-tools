@@ -11,6 +11,38 @@ enum CodexAIProvider {
 private struct CodexCredentials: Sendable {
     let accessToken: String
     let accountID: String?
+    let plan: String?
+}
+
+/// 只在本机解码 ChatGPT `id_token` 的 payload，取出订阅类型这一个字符串。
+/// 解码结果不外发、不写日志，也不读取 claim 中的其他字段。
+public enum CodexPlanExtractor {
+    private static let claim = "https://api.openai.com/auth"
+    private static let maximumTokenLength = 8_192
+
+    public static func plan(fromIDToken token: String?) -> String? {
+        guard let token, !token.isEmpty, token.count <= self.maximumTokenLength else { return nil }
+        let segments = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count >= 2,
+              let payload = self.decodeBase64URL(String(segments[1])),
+              let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        else { return nil }
+        let auth = json[self.claim] as? [String: Any]
+        guard let raw = (auth?["chatgpt_plan_type"] ?? json["chatgpt_plan_type"]) as? String
+        else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func decodeBase64URL(_ value: String) -> Data? {
+        guard !value.isEmpty else { return nil }
+        var text = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = text.count % 4
+        if remainder > 0 { text += String(repeating: "=", count: 4 - remainder) }
+        return Data(base64Encoded: text)
+    }
 }
 
 private enum CodexCredentialStore {
@@ -27,7 +59,24 @@ private enum CodexCredentialStore {
             throw AIUsageFailure(.credentialMissing, "Codex 凭证中没有可用的 OAuth token")
         }
         let account = ((tokens["account_id"] ?? tokens["accountId"]) as? String)?.aiSafeHeaderValue
-        return CodexCredentials(accessToken: token, accountID: account)
+        return CodexCredentials(
+            accessToken: token,
+            accountID: account,
+            plan: self.plan(tokens: tokens))
+    }
+
+    /// 降级到本地会话快照时，`rate_limits` 里没有套餐字段，只能从本机 `id_token` 兜底取值。
+    static func localPlan(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        let url = AIKnownPaths.codexHome(environment: environment).appendingPathComponent("auth.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = json["tokens"] as? [String: Any]
+        else { return nil }
+        return self.plan(tokens: tokens)
+    }
+
+    private static func plan(tokens: [String: Any]) -> String? {
+        CodexPlanExtractor.plan(fromIDToken: (tokens["id_token"] ?? tokens["idToken"]) as? String)
     }
 }
 
@@ -155,6 +204,7 @@ private struct CodexOAuthUsageStrategy: AIUsageFetchStrategy {
         switch response.statusCode {
         case 200:
             var snapshot = try CodexUsageParser.parse(data: response.data)
+            if snapshot.plan == nil { snapshot.plan = CodexUsageParser.plan(credentials.plan) }
             var partialFailures: [AIUsageFailure] = []
             if self.allowsDailySegments(plan: snapshot.plan),
                let analyticsURL = endpoint.analyticsURL,
@@ -503,7 +553,7 @@ public enum CodexUsageParser {
         return result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 
-    private static func plan(_ raw: String?) -> AIUsagePlan? {
+    static func plan(_ raw: String?) -> AIUsagePlan? {
         guard let raw, !raw.isEmpty else { return nil }
         let lower = raw.lowercased()
         let display: String
@@ -554,11 +604,14 @@ private struct CodexRolloutUsageStrategy: AIUsageFetchStrategy {
                 latestSnapshot = snapshot
             }
         }
-        guard let latestSnapshot else {
+        guard var snapshot = latestSnapshot else {
             throw AIUsageFailure(.localData, "Codex 本地会话中没有可识别的用量快照")
         }
+        if snapshot.plan == nil {
+            snapshot.plan = CodexUsageParser.plan(CodexCredentialStore.localPlan())
+        }
         return AIUsageFetchResult(
-            snapshot: latestSnapshot,
+            snapshot: snapshot,
             source: AIUsageSource(
                 id: self.id,
                 label: "本地会话快照",

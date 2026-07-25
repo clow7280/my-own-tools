@@ -51,9 +51,19 @@ Codex rollout 最多检查 128 个文件、每个文件尾部 1 MiB 且总读取
 
 Enterprise 的 `individual_limit` 会映射为稳定的月度额度扩展窗口；未知时长不会被猜成 5 小时或 7 天，而是保留准确时长单独展示。
 
+`plan_type` 只出现在用量响应里，因此响应缺少该字段或降级到 rollout 快照时，改为在本机解码 `auth.json` 中 `id_token` 的 payload，取 `https://api.openai.com/auth` claim 下的 `chatgpt_plan_type` 作为订阅徽章。
+解码不校验签名、不访问网络，除这一个套餐字符串外不读取其他 claim，也不写入日志。
+
 CodexBar 当前自动链路是 [OAuth → CLI app-server](https://github.com/steipete/CodexBar/blob/cc8da27cec92029a6435bfee4a703a719290234e/Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift)，但 app-server 的认证管理可能刷新并持久化用户凭证，因此本项目不在后台启动它，也不移植 CodexBar 的 refresh token 写回逻辑。
 
-Claude OAuth 兼容 `five_hour`、`seven_day`、旧版顶层专属窗口和新版 `limits[]`，并将显式缺少的 5 小时限额与存在但无法解析的字段严格区分。
+Claude OAuth 兼容 `five_hour`、`seven_day`、旧版顶层专属窗口和新版 `limits[]`。
+`limits[]` 中 `kind` 为 `session` 和 `weekly_all` 的条目是 5 小时与 7 天窗口的候选值，`weekly_scoped` 仍按模型展开为专属窗口。
+
+单个窗口的取值顺序为对象自身的 `utilization` 或 `used_percent`、`limits[]` 候选、`used_dollars ÷ limit_dollars`，`resets_at` 缺失时同样回退到候选条目。
+服务端会间歇性把 `utilization` 写成 null，前一档取不到值不影响后两档兜底。
+
+`five_hour` 显式缺失或为 null，且 `limits[]` 没有对应条目、周窗口又有数据时，5 小时限额记为取消。
+对象存在却三档都取不到值时只把该窗口记为数据缺失，其余窗口照常展示；只有整份响应没有任何可识别窗口才判定为结构变化。
 
 仅有 `extra_usage` 的消费限额账号映射为月度消费窗口；凭证会校验 `expiresAt`，成功的手动 Keychain
 读取只缓存在当前进程，401 会使对应缓存失效。

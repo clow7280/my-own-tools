@@ -29,7 +29,8 @@ MyOwnTools 是一个个人 macOS 菜单栏工具，用来查看系统状态和 A
 系统温度、GPU 与磁盘数据取决于具体 Mac 机型，无法读取时会显示为空。
 AI 用量会读取本机已登录的 Codex 或 Claude Code 凭证，不需要在应用中再次登录。
 应用只读凭证，不刷新或写回 token；Claude 返回 401 时会提示运行 `claude auth login`。
-Codex 会沿用 `config.toml` 中经过严格 HTTPS 校验的 `chatgpt_base_url`，并把企业 individual limit 显示为月度额度。
+Codex 会沿用 `config.toml` 中经过严格 HTTPS 校验的 `chatgpt_base_url`，并把企业 individual limit 显示为月度额度；
+断网降级到本地会话快照时，ChatGPT 订阅徽章仍会按本机登录信息显示。
 OpenCode Go 优先只读本地 SQLite 历史，并按公开额度显示带「本地估算」标识的滚动、每周与每月用量；
 本地数据不可用时，再从 Chrome、Arc、Brave、Edge、Vivaldi 或 Chromium 导入 `opencode.ai` 登录 cookie，
 读取网页工作区的实时用量；cookie、工作区 ID 和原始响应只在内存中使用，不会保存或记录。
