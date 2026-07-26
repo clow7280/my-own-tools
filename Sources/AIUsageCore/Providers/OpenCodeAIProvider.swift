@@ -343,7 +343,8 @@ private enum OpenCodeWebClient {
     private static let serverURL = URL(string: "https://opencode.ai/_server")!
     private static let workspacesServerID = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f"
     private static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) "
-        + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 MyOwnTools/0.2"
+        + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 "
+        + AIUsageVersion.userAgent
 
     static func fetch(cookieHeader: String, now: Date = Date()) async throws -> AIUsageSnapshot {
         guard cookieHeader.aiSafeHeaderValue != nil else {
@@ -414,8 +415,8 @@ private enum OpenCodeWebClient {
         guard let text = String(data: response.data, encoding: .utf8) else {
             throw AIUsageFailure(.schemaChanged, "OpenCode 返回了非 UTF-8 数据")
         }
-        if response.statusCode == 401 || response.statusCode == 403 || (300...399).contains(response.statusCode)
-            || self.looksSignedOut(text)
+        if response.statusCode == 401 || response.statusCode == 403
+            || (300...399).contains(response.statusCode)
         {
             throw AIUsageFailure(.unauthorized, "OpenCode 网页登录已过期")
         }
@@ -428,7 +429,14 @@ private enum OpenCodeWebClient {
         guard response.statusCode == 200 else {
             throw AIUsageFailure(.httpStatus, "OpenCode 请求失败（HTTP \(response.statusCode)）")
         }
-        return try OpenCodeUsageParser.parse(text: text, now: now)
+        // 页面能解析出用量就说明这次请求是带登录态的，此时任何文本启发式都不该推翻既成事实；
+        // 误报 unauthorized 会作废已验证的 Cookie 并重扫全部浏览器，手动刷新时逐个弹钥匙串授权。
+        do {
+            return try OpenCodeUsageParser.parse(text: text, now: now)
+        } catch let failure as AIUsageFailure where failure.kind == .schemaChanged {
+            guard self.looksSignedOut(text) else { throw failure }
+            throw AIUsageFailure(.unauthorized, "OpenCode 网页登录已过期")
+        }
     }
 
     private static func serverFunctionRequest(
@@ -533,13 +541,15 @@ private enum OpenCodeWebClient {
         return false
     }
 
+    /// 只保留登录墙独有的标记。`login` 与 `sign in` 会出现在正常用量页的脚本 URL、导航链接和
+    /// 第三方文案里，用它们判断等于把任何一次成功抓取都赌在页面文案上。
+    /// 服务端把错误嵌进 HTML 时会转义引号，因此 actor 文案同时接受转义写法。
     private static func looksSignedOut(_ text: String) -> Bool {
         let lower = text.lowercased()
-        return lower.contains("login")
-            || lower.contains("sign in")
-            || lower.contains("auth/authorize")
+        return lower.contains("auth/authorize")
             || lower.contains("not associated with an account")
             || lower.contains("actor of type \"public\"")
+            || lower.contains(#"actor of type \"public\""#)
     }
 }
 

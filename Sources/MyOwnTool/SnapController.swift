@@ -11,8 +11,22 @@ final class SnapController {
     private var eventMonitor: Any?
     private let overlay = OverlayManager()
 
-    var isEnabled = true {
-        didSet { if !isEnabled { cancel() } }
+    private static let enabledKey = "SnapEnabled"
+
+    /// 拖拽分屏默认开启，但 `bool(forKey:)` 在键不存在时返回 false，恰好与默认值相反，
+    /// 直接取会让首次启动的分屏是关的；所以先用 `object(forKey:)` 区分「从没存过」和「存过 false」。
+    private static var storedIsEnabled: Bool {
+        guard UserDefaults.standard.object(forKey: self.enabledKey) != nil else { return true }
+        return UserDefaults.standard.bool(forKey: self.enabledKey)
+    }
+
+    var isEnabled = SnapController.storedIsEnabled {
+        didSet {
+            if !isEnabled { cancel() }
+            // 设置页每次重建开关都会回写一次，值没变就不必打扰 UserDefaults
+            guard isEnabled != oldValue else { return }
+            UserDefaults.standard.set(isEnabled, forKey: Self.enabledKey)
+        }
     }
 
     private struct DragSession {

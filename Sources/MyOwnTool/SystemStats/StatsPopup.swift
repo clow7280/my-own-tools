@@ -35,6 +35,8 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         super.init()
 
         window.delegate = self
+        // ESC 交回控制器统一关闭；控制器强持有 window，这里必须弱引用回来避免循环
+        window.onCancel = { [weak self] in self?.close() }
         tabs.target = self
         tabs.action = #selector(tabChanged)
         tabs.selectedSegment = 0
@@ -64,7 +66,11 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
 
     /// deinit 不保证运行在主线程，`MainActor.assumeIsolated` 在非主线程会直接 trap；
     /// 监视器 token 取出后与 self 无关，可安全地回到主线程注销。
+    /// `removeObserver` 线程安全，不需要绕主线程；两个通知中心各自注册需各自注销。
     deinit {
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+
         guard let token = mouseMonitor else { return }
         if Thread.isMainThread {
             NSEvent.removeMonitor(token)
@@ -121,10 +127,13 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     }
 
     private func close() {
+        // 监视器只在弹窗打开期间存在，任何路径进来都先注销：窗口已被别处 orderOut 时
+        // 若跟着可见性 guard 一起返回，token 会随下次 toggle 覆盖字段而永久泄漏。
+        // lastClose 仍只在真正关掉可见窗口时记录，避免窗口关着时的失焦通知误触发重开防抖
+        removeMouseMonitor()
         guard window.isVisible else { return }
         window.orderOut(nil)
         lastClose = Date()
-        removeMouseMonitor()
     }
 
     private func removeMouseMonitor() {
@@ -240,6 +249,9 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
 
 /// 无边框、可成为 key window 的毛玻璃弹窗
 private final class PopupWindow: NSWindow {
+    /// ESC 的关闭动作由控制器提供，见 `cancelOperation`
+    var onCancel: (() -> Void)?
+
     init(size: NSSize) {
         super.init(contentRect: NSRect(origin: .zero, size: size),
                    styleMask: [.borderless, .fullSizeContentView], backing: .buffered, defer: true)
@@ -275,8 +287,9 @@ private final class PopupWindow: NSWindow {
 
     override var canBecomeKey: Bool { true }
 
-    // ESC 关闭
+    // ESC 关闭：必须回到控制器，窗口自己 orderOut 会跳过防抖记录与监视器注销——
+    // orderOut 之后才触发的 windowDidResignKey 已经看不到可见窗口，补不回这段清理
     override func cancelOperation(_ sender: Any?) {
-        orderOut(nil)
+        onCancel?()
     }
 }

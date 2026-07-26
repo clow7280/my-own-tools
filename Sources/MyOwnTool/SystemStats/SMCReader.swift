@@ -105,20 +105,62 @@ final class SMCReader {
         return list
     }
 
-    /// 按前缀发现温度键：枚举全部键后过滤前缀，并要求首次读数在合理量程内。
-    /// 不同代芯片的键名不同（M5 的 CPU 是 Tp00/Tp04/…），枚举比硬编码更通用。
-    func discoverTemperatureKeys(prefixes: [String]) -> [String] {
-        allKeys().filter { key in
-            guard prefixes.contains(where: { key.hasPrefix($0) }) else { return false }
-            guard let value = double(key) else { return false }
-            return value > 1 && value < 125
+    /// 温度键的分类结果；机型没有某类传感器时对应字段为空数组
+    struct TemperatureKeys {
+        var cpu: [String] = []
+        var gpu: [String] = []
+        var disk: [String] = []
+        var battery: [String] = []
+    }
+
+    /// 分组条件：一组前缀，外加可选后缀。
+    /// 电池温度键形如 TB*T，同前缀下还有电压电流键，只按前缀会把它们一起收进来
+    private struct TemperatureGroup {
+        let prefixes: [String]
+        var suffix: String? = nil
+        let field: WritableKeyPath<TemperatureKeys, [String]>
+
+        func matches(_ key: String) -> Bool {
+            guard prefixes.contains(where: key.hasPrefix) else { return false }
+            guard let suffix else { return true }
+            return key.hasSuffix(suffix)
         }
+    }
+
+    /// Tp=P核 Te=E核 Tf=M3 系 CPU 簇；Tg=GPU；TH=硬盘/NAND；TB*T=电池。
+    /// 各代芯片的键名不同（M5 的 CPU 是 Tp00/Tp04/…），枚举过滤比按芯片代硬编码键名通用
+    private static let temperatureGroups: [TemperatureGroup] = [
+        TemperatureGroup(prefixes: ["Tp", "Te", "Tf"], field: \TemperatureKeys.cpu),
+        TemperatureGroup(prefixes: ["Tg"], field: \TemperatureKeys.gpu),
+        TemperatureGroup(prefixes: ["TH"], field: \TemperatureKeys.disk),
+        TemperatureGroup(prefixes: ["TB"], suffix: "T", field: \TemperatureKeys.battery),
+    ]
+
+    /// 温度读数的合理量程，开区间两端都不取：下界滤掉未接传感器恒定返回的 0，
+    /// 上界滤掉明显失真的读数。发现键与逐次读取共用同一判据，
+    /// 否则探针与运行时会对同一机型给出不同结论，而这种漂移不产生任何报错
+    private static let plausibleCelsius = (lower: 1.0, upper: 125.0)
+
+    private static func isPlausible(_ celsius: Double) -> Bool {
+        celsius > plausibleCelsius.lower && celsius < plausibleCelsius.upper
+    }
+
+    /// 发现温度键：枚举一次全部键并同时分出各组，只对命中前缀的键补一次读取确认量程。
+    /// 每组各自枚举会把上千个键重复走一遍，调用方一律共用这一次分类
+    func discoverTemperatureKeys() -> TemperatureKeys {
+        var result = TemperatureKeys()
+        for key in allKeys() {
+            let hits = Self.temperatureGroups.filter { $0.matches(key) }
+            guard !hits.isEmpty, let value = double(key), Self.isPlausible(value) else { continue }
+            for group in hits { result[keyPath: group.field].append(key) }
+        }
+        return result
     }
 
     /// 一组键的即时读数（逐键读取，忽略掉线或失真的值）
     func temperatures(_ keys: [String]) -> [Double] {
         keys.compactMap { key in
-            guard let v = double(key), v > 1, v < 125 else { return nil }
+            guard let v = double(key), Self.isPlausible(v) else { return nil }
             return v
         }
     }

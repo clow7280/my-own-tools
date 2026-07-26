@@ -33,11 +33,14 @@ struct StatsSample {
 
 /// 数值格式化（菜单栏与弹窗共用）
 enum StatsFormat {
-    /// 菜单栏网速 → (数字, 单位)：数字含小数点最多 3 字符，
-    /// 单位 B/K/M/G 自动切换，字节仅个位数时显示 B（1000 进制）
+    /// 菜单栏网速 → (数字, 单位)：数字含小数点最多 3 字符，单位 B/K/M/G 自动切换（1000 进制），
+    /// 1000 以下显示整数字节，其余各档小于 9.95 时保留一位小数
     static func menuSpeed(_ bps: Double) -> (number: String, unit: String) {
         var value = max(bps, 0)
-        if value < 9.5 { return (String(format: "%.0f", value), "B") }
+        // B 档一直用到 999：999B 与 999K 等宽不会额外撑开菜单栏，
+        // 而过早进位会把 10~49 B/s 显示成 0.0K，非零速率的读数被抹成 0；
+        // 阈值取 999.5 与下面各档一致，避免四舍五入进位到 4 个数字字符
+        if value < 999.5 { return (String(format: "%.0f", value), "B") }
         for unit in ["K", "M", "G"] {
             value /= 1000
             if value < 999.5 || unit == "G" {
@@ -49,8 +52,9 @@ enum StatsFormat {
         return ("0", "B")
     }
 
-    /// 字节/秒 → 紧凑速率文本（如 "312M"、"1.2M"、"0B"）：
-    /// 沿用菜单栏网速的 3 字符数字加单位规则，供 sparkline 右侧刻度列这类窄列使用
+    /// 字节/秒 → 紧凑速率文本（如 "312M"、"1.2M"、"999B"）：
+    /// 沿用菜单栏网速的 3 字符数字加单位规则，1000 以下保留整数字节，
+    /// 供 sparkline 右侧刻度列这类窄列使用
     static func compactSpeed(_ bps: Double) -> String {
         let (number, unit) = menuSpeed(bps)
         return number + unit

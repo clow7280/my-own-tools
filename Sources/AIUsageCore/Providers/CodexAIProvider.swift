@@ -195,7 +195,7 @@ private struct CodexOAuthUsageStrategy: AIUsageFetchStrategy {
             request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
         request.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
-        request.setValue("MyOwnTools/0.2", forHTTPHeaderField: "User-Agent")
+        request.setValue(AIUsageVersion.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let response = try await AIURLSessionHTTPTransport.shared.send(
@@ -291,7 +291,7 @@ private struct CodexOAuthUsageStrategy: AIUsageFetchStrategy {
             request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
         request.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
-        request.setValue("MyOwnTools/0.2", forHTTPHeaderField: "User-Agent")
+        request.setValue(AIUsageVersion.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let response = try await AIURLSessionHTTPTransport.shared.send(
             request,

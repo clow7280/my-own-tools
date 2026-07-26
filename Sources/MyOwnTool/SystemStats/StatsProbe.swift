@@ -17,24 +17,22 @@ enum StatsProbe {
         _ = net.sample()
 
         if let smc = SMCReader() {
-            let cpuKeys = smc.discoverTemperatureKeys(prefixes: ["Tp", "Te", "Tf"])
-            let gpuKeys = smc.discoverTemperatureKeys(prefixes: ["Tg"])
-            let diskKeys = smc.discoverTemperatureKeys(prefixes: ["TH"])
-            let batteryKeys = smc.discoverTemperatureKeys(prefixes: ["TB"]).filter { $0.hasSuffix("T") }
-            print("SMC CPU 温度键 (\(cpuKeys.count)): \(cpuKeys.joined(separator: " "))")
-            print("SMC GPU 温度键 (\(gpuKeys.count)): \(gpuKeys.joined(separator: " "))")
-            print("SMC 硬盘温度键 (\(diskKeys.count)): \(diskKeys.joined(separator: " "))")
-            print("SMC 电池温度键 (\(batteryKeys.count)): \(batteryKeys.joined(separator: " "))")
+            // 四组键共用一次全量枚举，与 App 运行时走同一份分类和量程判据
+            let smcKeys = smc.discoverTemperatureKeys()
+            print("SMC CPU 温度键 (\(smcKeys.cpu.count)): \(smcKeys.cpu.joined(separator: " "))")
+            print("SMC GPU 温度键 (\(smcKeys.gpu.count)): \(smcKeys.gpu.joined(separator: " "))")
+            print("SMC 硬盘温度键 (\(smcKeys.disk.count)): \(smcKeys.disk.joined(separator: " "))")
+            print("SMC 电池温度键 (\(smcKeys.battery.count)): \(smcKeys.battery.joined(separator: " "))")
             func stats(_ keys: [String]) -> String {
                 let values = smc.temperatures(keys)
                 guard !values.isEmpty else { return "不可用" }
                 let avg = values.reduce(0, +) / Double(values.count)
                 return String(format: "平均 %.1f℃  峰值 %.1f℃", avg, values.max()!)
             }
-            print("CPU 温度: " + stats(cpuKeys))
-            print("GPU 温度: " + stats(gpuKeys))
-            print("硬盘温度: " + stats(diskKeys))
-            print("电池温度: " + stats(batteryKeys))
+            print("CPU 温度: " + stats(smcKeys.cpu))
+            print("GPU 温度: " + stats(smcKeys.gpu))
+            print("硬盘温度: " + stats(smcKeys.disk))
+            print("电池温度: " + stats(smcKeys.battery))
         } else {
             print("SMC: 连接失败，温度不可用")
         }

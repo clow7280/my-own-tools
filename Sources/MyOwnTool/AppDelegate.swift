@@ -6,6 +6,14 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let snapController = SnapController()
     private var permissionTimer: Timer?
+    private var permissionChecks = 0
+
+    /// 授权轮询的节奏。刚启动时用户多半正站在系统设置里勾选，2 秒一轮才能勾完立刻生效；
+    /// 30 次约一分钟后基本可以判定用户已经离开，降到 30 秒只为长期待命。
+    /// 授权也可能几小时后才发生，所以不设放弃上限。
+    private static let permissionFastInterval: TimeInterval = 2
+    private static let permissionFastChecks = 30
+    private static let permissionSlowInterval: TimeInterval = 30
 
     // 唯一的菜单栏项：系统状态区（网速 + 竖柱 + AI 用量环），点击弹详情窗
     private var statsItem: NSStatusItem?
@@ -35,15 +43,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             snapController.start()
         } else {
             // 等待用户在系统设置中完成授权后自动启动
-            permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self, Permissions.trusted else { return }
-                    self.permissionTimer?.invalidate()
-                    self.permissionTimer = nil
-                    self.snapController.start()
-                }
-            }
+            schedulePermissionCheck()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        stopPermissionTimer()
+        statsMonitor.stop()
+        aiMonitor.stop()
+    }
+
+    /// 用一次性定时器逐次重排而不是重复定时器，间隔才能随等待时长变化
+    private func schedulePermissionCheck() {
+        let interval = permissionChecks < Self.permissionFastChecks
+            ? Self.permissionFastInterval
+            : Self.permissionSlowInterval
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.checkPermission() }
+        }
+    }
+
+    private func checkPermission() {
+        guard Permissions.trusted else {
+            permissionChecks += 1
+            schedulePermissionCheck()
+            return
+        }
+        stopPermissionTimer()
+        snapController.start()
+    }
+
+    private func stopPermissionTimer() {
+        permissionTimer?.invalidate()
+        permissionTimer = nil
     }
 
     private func setupStatsItem() {

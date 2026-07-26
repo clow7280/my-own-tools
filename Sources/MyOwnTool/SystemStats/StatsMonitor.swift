@@ -150,25 +150,16 @@ final class StatsMonitor {
             NSLog("MyOwnTools: SMC 连接失败，温度显示不可用")
             return
         }
-        // Tp=P核 Te=E核 Tf=M3 系 CPU 簇；Tg=GPU；TH=硬盘/NAND；TB*T=电池。
-        // 枚举过滤比按芯片代硬编码更通用；只枚举一次全部键
-        let keys = smc.allKeys()
-        func plausible(_ key: String) -> Bool {
-            guard let v = smc.double(key) else { return false }
-            return v > 1 && v < 125
-        }
-        let cpu = keys.filter { ["Tp", "Te", "Tf"].contains(where: $0.hasPrefix) && plausible($0) }
-        let gpu = keys.filter { $0.hasPrefix("Tg") && plausible($0) }
-        let disk = keys.filter { $0.hasPrefix("TH") && plausible($0) }
-        let battery = keys.filter { $0.hasPrefix("TB") && $0.hasSuffix("T") && plausible($0) }
-        cpuTempKeys = cpu
-        gpuTempKeys = gpu
-        diskTempKeys = disk
-        batteryTempKeys = battery
+        // 键名规则与量程判据都由 SMCReader 收口，探针共用同一份分类，避免两处静默漂移
+        let keys = smc.discoverTemperatureKeys()
+        cpuTempKeys = keys.cpu
+        gpuTempKeys = keys.gpu
+        diskTempKeys = keys.disk
+        batteryTempKeys = keys.battery
         // 核心温度(CPU/GPU)驱动菜单栏边框分级,枚举不到才记一条便于排查机型差异,正常启动静默
-        if cpu.isEmpty || gpu.isEmpty {
+        if keys.cpu.isEmpty || keys.gpu.isEmpty {
             NSLog("MyOwnTools: SMC 温度键发现异常 CPU=%d GPU=%d 硬盘=%d 电池=%d",
-                  cpu.count, gpu.count, disk.count, battery.count)
+                  keys.cpu.count, keys.gpu.count, keys.disk.count, keys.battery.count)
         }
     }
 }

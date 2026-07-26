@@ -18,6 +18,13 @@ final class AIUsageMonitor {
     /// 余量必须覆盖这段抖动，否则整个周期会被误判为“刚刚刷新过”而跳过。
     private static let tickTolerance: TimeInterval = 15
 
+    /// 单次刷新的整体上限。网络路径每个 HTTP 请求自带 15 秒超时，但本地路径
+    /// （钥匙串读取、OpenCode 的 SQLite 查询、Codex 的 rollout 扫描）没有任何超时，
+    /// 卡住就再也不会回调。取值需高于最慢的合法链路：OpenCode 手动刷新要串行试完
+    /// 浏览器候选、取工作区再逐个取用量页，命令行探针给这条链路留的上限是 45 秒，
+    /// 留出余量取 60 秒；同时远低于最小刷新间隔 180 秒，卡死的提供方最迟下个周期恢复。
+    private static let refreshTimeout: TimeInterval = 60
+
     static var interval: TimeInterval {
         get {
             let stored = UserDefaults.standard.double(forKey: self.intervalKey)
@@ -42,6 +49,7 @@ final class AIUsageMonitor {
     private var states: [AIProviderID: AIProviderState]
     private var generations: [AIProviderID: Int] = [:]
     private var tasks: [AIProviderID: Task<Void, Never>] = [:]
+    private var watchdogs: [AIProviderID: DispatchSourceTimer] = [:]
     private var currentInterval = AIUsageMonitor.interval
     private var refreshTimer: DispatchSourceTimer?
     private var healthTimer: DispatchSourceTimer?
@@ -91,6 +99,8 @@ final class AIUsageMonitor {
         }
         self.tasks.values.forEach { $0.cancel() }
         self.tasks.removeAll()
+        self.watchdogs.values.forEach { $0.cancel() }
+        self.watchdogs.removeAll()
         for descriptor in self.descriptors {
             self.generations[descriptor.id, default: 0] += 1
             self.states[descriptor.id]?.isRefreshing = false
@@ -130,14 +140,59 @@ final class AIUsageMonitor {
         self.states[providerID]?.lastAttemptAt = Date()
         self.onUpdate?()
 
+        // 先装看门狗再发起拉取，避免完成回调抢在装设之前落地而留下无人取消的定时器
+        self.installWatchdog(providerID, generation: generation)
         let task = descriptor.pipeline.fetch(context: context) { [weak self] outcome in
             Task { @MainActor in
                 guard let self, self.generations[providerID] == generation else { return }
                 self.tasks[providerID] = nil
+                self.clearWatchdog(providerID)
                 self.apply(outcome, providerID: providerID)
             }
         }
         self.tasks[providerID] = task
+    }
+
+    /// isRefreshing 只在完成回调里复位，strategy 一旦不返回，自动刷新和手动刷新
+    /// 都会被互斥 guard 永久挡住、刷新按钮一直转，只能重启应用；看门狗是唯一的解锁手段。
+    private func installWatchdog(_ providerID: AIProviderID, generation: Int) {
+        self.clearWatchdog(providerID)
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + Self.refreshTimeout, leeway: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            Task { @MainActor in
+                self?.fireWatchdog(providerID, generation: generation)
+            }
+        }
+        timer.resume()
+        self.watchdogs[providerID] = timer
+    }
+
+    private func clearWatchdog(_ providerID: AIProviderID) {
+        self.watchdogs[providerID]?.cancel()
+        self.watchdogs[providerID] = nil
+    }
+
+    private func fireWatchdog(_ providerID: AIProviderID, generation: Int) {
+        // 与完成回调共用同一个 generation 判断：stop() 和新一轮 refresh 都会推进它，
+        // 让这次开火失效。正常完成不推进 generation，改由 watchdogs 里是否还有条目兜底：
+        // cancel 之后已经投递到主队列的 handler 仍会执行一次，光看 generation 会误开火。
+        guard self.watchdogs[providerID] != nil,
+              self.generations[providerID] == generation
+        else { return }
+        self.clearWatchdog(providerID)
+        // 再推进一格，让卡住的那次拉取即使事后回调也会被当作过期结果丢弃
+        self.generations[providerID, default: 0] += 1
+        self.tasks[providerID]?.cancel()
+        self.tasks[providerID] = nil
+        let failure = AIUsageFailure(
+            .timeout,
+            "拉取超过 \(Int(Self.refreshTimeout)) 秒仍未返回，已中止本次刷新")
+        // 走正常的 apply 路径，健康度、叹号徽章和错误文案才能一并更新；
+        // 卡在哪个 strategy 无从判断，attempts 留空而不是沿用上一轮的记录
+        self.apply(
+            AIUsageFetchOutcome(result: .failure(failure), attempts: []),
+            providerID: providerID)
     }
 
     private func installRefreshTimer(firstDeadline: DispatchTime) {
