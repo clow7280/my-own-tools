@@ -12,16 +12,19 @@ MyOwnTools 是面向 macOS 15 及以上版本的个人菜单栏应用。
 .
 ├── Sources/
 │   ├── AIUsageCore/       AI 提供方 registry、抓取策略与解析，不依赖 AppKit
+│   ├── StatsCore/         系统状态与布局的可测纯逻辑，不依赖 AppKit
 │   └── MyOwnTool/
 │       └── SystemStats/   系统采样、AI 用量展示和状态 UI
 ├── Tests/
-│   └── AIUsageCoreChecks/ AIUsageCore 的离线校验可执行目标
+│   ├── AIUsageCoreChecks/ AIUsageCore 的离线校验可执行目标
+│   └── StatsCoreChecks/   StatsCore 的离线校验可执行目标
 ├── Resources/             应用资源
 ├── docs/                  架构说明
 └── scripts/               图标生成与 app 打包脚本
 ```
 
-根目录的 `README.md` 面向用户，`DESIGN.md` 定义系统状态 UI 规范，`Package.swift` 定义构建目标。
+根目录的 `README.md` 面向用户，`DESIGN.md` 定义菜单栏、弹窗与编辑覆盖层的视觉规范，
+`Package.swift` 定义构建目标。
 `docs/AI_USAGE.md` 定义 AI 用量的数据模型、降级顺序、安全边界和新增提供方流程。
 
 ## 构建与验证
@@ -29,6 +32,7 @@ MyOwnTools 是面向 macOS 15 及以上版本的个人菜单栏应用。
 ```sh
 swift build
 swift run AIUsageCoreChecks
+swift run StatsCoreChecks
 swift run MyOwnTools
 swift run MyOwnTools --stats-probe
 swift run MyOwnTools --ai-probe
@@ -36,12 +40,16 @@ swift run MyOwnTools --ai-probe
 ```
 
 - 所有改动完成后至少运行 `swift build` 进行验证。
-- 改动 `AIUsageCore` 或其校验时，额外运行 `swift run AIUsageCoreChecks`。
+- 改动 `AIUsageCore` 或其校验时，额外运行 `swift run AIUsageCoreChecks`；
+  改动 `StatsCore` 或其校验时，额外运行 `swift run StatsCoreChecks`。
 - 修改 release、打包或签名逻辑时，额外运行 `swift build -c release` 或打包脚本。
 - 系统状态探针用于验证采样、温度、路由和公网 IP；AI 探针用于验证本机凭证读取与远端接口。
 - AI 探针会访问用户凭证和远端服务，仅在相关任务中运行，禁止输出或保存 token 与敏感响应。
-- 仓库没有 XCTest target，自动化校验由 `AIUsageCoreChecks` 可执行目标承载，
-  只覆盖 `AIUsageCore` 的解析、降级判断与端点构造，不读取真实凭证也不访问网络。
+- 仓库没有 XCTest target，自动化校验由两个可执行目标承载。
+  `AIUsageCoreChecks` 覆盖 `AIUsageCore` 的解析、降级判断与端点构造，
+  `StatsCoreChecks` 覆盖 `StatsCore` 的数值格式化、sparkline 分桶与量程、
+  温度档位与布局数值判定这类纯逻辑边界。
+  两者都不读取真实凭证，也不访问网络；依赖 AppKit 的部分不进校验目标，只能手工验证。
 - 菜单栏、辅助功能、多显示器和失焦交互需要在图形会话中手工验证。
 - 默认打包证书为 `MyOwnToolSigning`；本机缺少证书时可用 `CODESIGN_IDENTITY=-` 临时验证打包。
 - `MyOwnToolSigning` 是自签名证书，未被信任，`security find-identity -v` 只列有效身份，
@@ -57,9 +65,14 @@ swift run MyOwnTools --ai-probe
 - 全局事件监听保持只读，不改成会修改事件流的主动式 `CGEventTap`。
 - Accessibility 调用保留短超时、自身窗口排除和“尺寸 → 位置 → 尺寸”的窗口设置顺序。
 - 分区基于 `NSScreen.visibleFrame`，必须避开菜单栏和 Dock，并正确转换 Cocoa 与 AX 坐标。
-- 用户布局位于 `~/.config/myowntool/layouts.json`；读取失败时回退默认值，不覆盖已有配置。
+- 用户布局位于 `~/.config/myowntool/layouts.json`；读取失败或分区数值非法时回退默认值。
+  覆盖用户配置的入口只有分割线编辑写回一处，写盘前先过读取时的同一套数值校验；
+  不要新增其他写回路径。
 - 差分采样器在系统唤醒后重建基准；硬件数据不可用时应降级显示，不得导致应用退出。
 - SMC 和 IOAccelerator 字段随机型与系统变化，不硬编码单一设备假设。
+- `StatsCore` 只放能离线校验的纯逻辑，不含 AppKit 视图与绘制；
+  新增判定优先落在这里并补上断言，UI 侧只做取值与呈现。
+  温度档位的阈值判定属于 `StatsCore`，档位对应的颜色留在 `MyOwnTool` 侧，由 `DESIGN.md` 管辖。
 - AI 用量统一为 `0...1`，窗口值显式区分已测量、限额取消和数据缺失，不用 `nil` 表达多种含义。
 - 提供方顺序、降级策略与展示分别由 `AIProviderRegistry` 和 `AIProviderPresentationRegistry` 声明，
   两者必须一一对应；AppKit 类型不得进入 `AIUsageCore`。
@@ -113,7 +126,7 @@ git tag -a 0.2 -m "MyOwnTools 0.2"
 
 改版本号时同步更新以下位置，确保全项目只存在一个版本字符串：
 
+- `Sources/AIUsageCore/AIUsageVersion.swift` 的 `short`，Swift 侧唯一来源；
+  各 provider 请求头的 User-Agent 与设置页页脚的兜底版本都由它派生，不要再写字面量
 - `README.md` 开头的当前版本
 - `scripts/make-app.sh` 中 Info.plist 的 `CFBundleShortVersionString`
-- `SystemStats/StatsPages.swift` 设置页页脚读取 Info.plist 失败时的兜底值
-- `AIUsageCore/Providers/` 下各 provider 请求头里的 `MyOwnTools/<版本号>` User-Agent

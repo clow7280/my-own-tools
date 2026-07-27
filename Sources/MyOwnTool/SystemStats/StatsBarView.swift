@@ -1,5 +1,6 @@
 import AIUsageCore
 import AppKit
+import StatsCore
 
 /// 菜单栏内容视图，从左到右三块（DESIGN.md「菜单栏常驻区」）：
 /// 网速两行数字（上=上传次级色 下=下载标签色）| CPU/GPU/RAM 竖柱 | ChatGPT/Claude/OpenCode 双层用量环。

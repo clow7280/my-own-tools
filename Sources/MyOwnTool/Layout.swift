@@ -1,43 +1,17 @@
 import AppKit
+import StatsCore
 
-/// 单个分区。坐标为屏幕可用区域内的比例值（0~1），原点在左上角。
-struct ZoneSpec: Codable {
-    var name: String?
-    var x: Double
-    var y: Double
-    var w: Double
-    var h: Double
-}
-
-struct LayoutConfig: Codable {
-    /// 内置显示器（MacBook 屏幕）布局
-    var builtin: [ZoneSpec]
-    /// 外接显示器默认布局
-    var external: [ZoneSpec]
-    /// 按显示器名称（系统设置中显示的名称）指定布局，优先级最高
-    var displays: [String: [ZoneSpec]]?
-}
+/// 分区、配置结构与纯几何判定在 StatsCore，便于离线校验；
+/// 其余文件不必各自 import 即可继续按原名引用
+typealias ZoneSpec = StatsCore.ZoneSpec
+typealias LayoutConfig = StatsCore.LayoutConfig
 
 enum LayoutStore {
     static let configURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/myowntool/layouts.json")
 
     /// 默认配置：内置屏左右对半；外接屏为「主区 + 右栏 + 底部三格」。
-    static let defaultJSON = """
-    {
-      "builtin": [
-        { "name": "左半屏", "x": 0,   "y": 0, "w": 0.5, "h": 1 },
-        { "name": "右半屏", "x": 0.5, "y": 0, "w": 0.5, "h": 1 }
-      ],
-      "external": [
-        { "name": "1·主区", "x": 0,      "y": 0,      "w": 0.6667, "h": 0.6667 },
-        { "name": "2·右栏", "x": 0.6667, "y": 0,      "w": 0.3333, "h": 0.6667 },
-        { "name": "A·底左", "x": 0,      "y": 0.6667, "w": 0.3333, "h": 0.3333 },
-        { "name": "B·底中", "x": 0.3333, "y": 0.6667, "w": 0.3334, "h": 0.3333 },
-        { "name": "C·底右", "x": 0.6667, "y": 0.6667, "w": 0.3333, "h": 0.3333 }
-      ]
-    }
-    """
+    static let defaultJSON = LayoutConfig.defaultJSON
 
     private(set) static var config: LayoutConfig = decodeDefault()
     /// 最近一次（热）重载时间，供设置页展示
@@ -51,23 +25,8 @@ enum LayoutStore {
         try! JSONDecoder().decode(LayoutConfig.self, from: Data(defaultJSON.utf8))
     }
 
-    /// 比例值比较的容差。
-    /// 配置里的比例是手写的三位小数，0.6667 + 0.3333 这类加法在 Double 里未必正好等于 1，
-    /// 严格按 <= 1 判定会把默认布局自己判成越屏；1e-6 折算到 4K 宽度不足 0.01 像素，
-    /// 既能吸收舍入误差，也不会放过真正越界的数值。
-    private static let ratioEpsilon = 1e-6
-
-    /// 剔除会让 zoneRects 算出退化或越屏矩形的分区。
-    /// 这些矩形会经 Accessibility 直接套到其他 App 的窗口上，宁可丢弃也不能放行。
     private static func validZones(_ zones: [ZoneSpec]) -> [ZoneSpec] {
-        zones.filter { zone in
-            // NaN 与 ±inf 参与比较时所有判定都会失效，必须先挡掉
-            guard zone.x.isFinite, zone.y.isFinite, zone.w.isFinite, zone.h.isFinite else { return false }
-            // 容差内视作等于 0 或等于 1：宽高不得退化，起点不得为负，右下角不得越出可用区域
-            guard zone.w > ratioEpsilon, zone.h > ratioEpsilon else { return false }
-            guard zone.x >= -ratioEpsilon, zone.y >= -ratioEpsilon else { return false }
-            return zone.x + zone.w <= 1 + ratioEpsilon && zone.y + zone.h <= 1 + ratioEpsilon
-        }
+        LayoutGeometry.validZones(zones)
     }
 
     /// 逐数组校验用户配置。默认布局满足同一套判定，可直接当兜底来源。
@@ -108,6 +67,40 @@ enum LayoutStore {
         guard !fm.fileExists(atPath: configURL.path) else { return }
         try? fm.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? defaultJSON.write(to: configURL, atomically: true, encoding: .utf8)
+    }
+
+    /// 分割线编辑写回：更新该屏幕对应的配置段并持久化。
+    /// 重新编码会规范化格式并丢弃未知字段，配置文件以本程序写出的结构为准。
+    ///
+    /// 这是唯一会覆盖用户配置的入口，只在用户拖动过分割线并松开 Shift 时调用；
+    /// 写盘前先过一遍 load() 用的同一套数值校验，任何一个分区不合格就整体放弃，
+    /// 免得写出一份自己下一秒热重载时又会丢弃的配置。
+    static func save(specs: [ZoneSpec], for screen: NSScreen) {
+        let normalized = specs.map { $0.normalizedForStorage() }
+        guard !normalized.isEmpty, validZones(normalized).count == normalized.count else { return }
+
+        var cfg = config
+        let name = screen.localizedName
+        if cfg.displays?[name] != nil {
+            cfg.displays?[name] = normalized
+        } else if LayoutProvider.isBuiltin(screen) {
+            cfg.builtin = normalized
+        } else {
+            cfg.external = normalized
+        }
+        config = cfg
+        lastLoaded = Date()
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(cfg) else { return }
+        let fm = FileManager.default
+        try? fm.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // 原子写只在目录内建临时文件再改名，对监视目录的 source 报的是 .write 而非 .rename，
+        // 所以走的是热重载分支、不会误触 remount()；
+        // 由此触发的 load() 只更新内存配置，不会再写盘，写-读-写不成环
+        try? data.write(to: configURL, options: .atomic)
+        startWatching()     // 目录可能刚创建，补挂监视
     }
 
     /// 配置热重载：监视配置目录，保存后自动重载。
@@ -172,14 +165,6 @@ enum LayoutProvider {
 
     /// 分区在 Cocoa 全局坐标系下的矩形（基于 visibleFrame，自动避开菜单栏和 Dock）
     static func zoneRects(for screen: NSScreen) -> [CGRect] {
-        let area = screen.visibleFrame
-        return specs(for: screen).map { spec in
-            CGRect(
-                x: area.minX + area.width * spec.x,
-                y: area.minY + area.height * (1 - spec.y - spec.h),
-                width: area.width * spec.w,
-                height: area.height * spec.h
-            )
-        }
+        LayoutGeometry.rects(for: specs(for: screen), in: screen.visibleFrame)
     }
 }

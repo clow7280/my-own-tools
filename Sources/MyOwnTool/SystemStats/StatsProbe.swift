@@ -1,5 +1,6 @@
 import AIUsageCore
 import Foundation
+import StatsCore
 
 /// 命令行探针：`MyOwnTools --stats-probe`
 /// 不启动 GUI，直接验证全部数据通路（CPU/GPU/RAM/网速/SMC 温度），打印结果后退出

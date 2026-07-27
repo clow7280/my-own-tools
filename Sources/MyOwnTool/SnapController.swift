@@ -2,6 +2,7 @@ import AppKit
 
 /// 监听 Shift 窗口手势：按住 Shift 拖动时显示分区标记、松手吸附到所在分区；
 /// Shift + 双击标题栏则对该窗口依次执行 居中 → 填充 → 还原。
+/// 第三个 Shift 手势「长按进入分割线编辑」在 LayoutEditController，优先级与让位规则见那里。
 ///
 /// 修饰键选 Shift 而非 Option：Option-点按另一 App 的窗口会触发系统的
 /// 「隐藏当前 App」行为，规避它需要能改写事件流的 CGEventTap，而主动式 tap
@@ -26,6 +27,17 @@ final class SnapController {
             // 设置页每次重建开关都会回写一次，值没变就不必打扰 UserDefaults
             guard isEnabled != oldValue else { return }
             UserDefaults.standard.set(isEnabled, forKey: Self.enabledKey)
+        }
+    }
+
+    /// 分割线编辑模式期间挂起，由 LayoutEditController 置位。
+    /// 三个 Shift 手势里编辑模式优先级最高：进入编辑后本控制器让位，
+    /// 此时的 Shift 拖拽只用来拖分割线，不再吸附窗口；退出编辑模式即恢复。
+    /// 挂起时顺手清掉进行中的会话，免得恢复后接上一个早已过时的拖拽。
+    var isSuspended = false {
+        didSet {
+            guard isSuspended, isSuspended != oldValue else { return }
+            cancel()
         }
     }
 
@@ -59,7 +71,7 @@ final class SnapController {
     }
 
     private func handle(_ event: NSEvent) {
-        guard isEnabled else { return }
+        guard isEnabled, !isSuspended else { return }
         let shiftHeld = event.modifierFlags.contains(.shift)
 
         switch event.type {

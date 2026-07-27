@@ -1,4 +1,5 @@
 import AppKit
+import StatsCore
 
 /// 固定调色板——DESIGN.md 的代码对应物，改动前先改文档。
 /// 每个指标色有标准/弱化/深色态变体（NSColor 动态解析浅深外观）。
@@ -64,26 +65,8 @@ enum StatsPalette {
     }
 }
 
-/// 温度分级（离散状态色）：菜单栏竖柱边框与弹窗温度数值。
-/// CPU/GPU 柱取自身温度，RAM 柱取硬盘温度；≥90℃ 为紧急档，边框闪烁。
-enum TempTier {
-    case cool       // < 45℃
-    case warm       // 45–60℃
-    case hot        // 60–75℃
-    case searing    // 75–90℃
-    case critical   // ≥ 90℃
-
-    init?(_ temp: Double?) {
-        guard let temp else { return nil }
-        switch temp {
-        case ..<45: self = .cool
-        case ..<60: self = .warm
-        case ..<75: self = .hot
-        case ..<90: self = .searing
-        default: self = .critical
-        }
-    }
-
+/// 温度分级的状态色：档位判定在 StatsCore 的 TempTier，颜色留在这里跟随调色板。
+extension TempTier {
     /// 竖柱边框色
     var border: NSColor {
         switch self {

@@ -5,6 +5,7 @@ import ServiceManagement
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let snapController = SnapController()
+    private let layoutEditController = LayoutEditController()
     private var permissionTimer: Timer?
     private var permissionChecks = 0
 
@@ -40,15 +41,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Permissions.request()
         if Permissions.trusted {
-            snapController.start()
+            startInteractionControllers()
         } else {
             // 等待用户在系统设置中完成授权后自动启动
             schedulePermissionCheck()
         }
     }
 
+    /// 拖拽吸附与分割线编辑共用授权门槛：全局键鼠监视需要辅助功能权限。
+    /// 两者也共用设置页的「拖拽分屏」开关，启动时把持久化的值同步给编辑控制器。
+    private func startInteractionControllers() {
+        layoutEditController.isEnabled = snapController.isEnabled
+        // 编辑模式期间挂起吸附，两个 Shift 手势不会同时生效
+        layoutEditController.onEditingChanged = { [weak self] editing in
+            self?.snapController.isSuspended = editing
+        }
+        snapController.start()
+        layoutEditController.start()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         stopPermissionTimer()
+        // 编辑控制器持有长按定时器、全局与本地事件监视器和覆盖窗口，退出前一并撤掉
+        layoutEditController.stop()
         statsMonitor.stop()
         aiMonitor.stop()
     }
@@ -70,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         stopPermissionTimer()
-        snapController.start()
+        startInteractionControllers()
     }
 
     private func stopPermissionTimer() {
@@ -152,7 +167,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsActions(
             isTrusted: { Permissions.trusted },
             isSnapEnabled: { [weak self] in self?.snapController.isEnabled ?? false },
-            setSnapEnabled: { [weak self] in self?.snapController.isEnabled = $0 },
+            // 开关一并管住长按 Shift 编辑：用户关掉分屏后不该还有 Shift 手势拦截
+            setSnapEnabled: { [weak self] in
+                self?.snapController.isEnabled = $0
+                self?.layoutEditController.isEnabled = $0
+            },
             loginItemState: { [weak self] in
                 guard let self, self.isRunningFromBundle else { return nil }
                 return SMAppService.mainApp.status == .enabled

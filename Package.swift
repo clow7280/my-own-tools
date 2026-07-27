@@ -7,15 +7,21 @@ let package = Package(
     platforms: [.macOS("15.0")],
     targets: [
         .target(name: "AIUsageCore", path: "Sources/AIUsageCore"),
+        .target(name: "StatsCore", path: "Sources/StatsCore"),
         .executableTarget(
             name: "MyOwnTools",
-            dependencies: ["AIUsageCore"],
+            dependencies: ["AIUsageCore", "StatsCore"],
             path: "Sources/MyOwnTool"
         ),
         .executableTarget(
             name: "AIUsageCoreChecks",
             dependencies: ["AIUsageCore"],
             path: "Tests/AIUsageCoreChecks"
+        ),
+        .executableTarget(
+            name: "StatsCoreChecks",
+            dependencies: ["StatsCore"],
+            path: "Tests/StatsCoreChecks"
         )
     ]
 )
