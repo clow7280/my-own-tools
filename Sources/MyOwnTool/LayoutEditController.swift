@@ -1,15 +1,17 @@
 import AppKit
+import StatsCore
 
 /// 长按 Shift 1 秒（期间无按键与鼠标操作）进入分割线编辑模式：
 /// 每条分割线上覆盖一个本应用的细条手柄窗口，拖动手柄即按比例调整两侧分区；
-/// 松开 Shift 保存到布局配置，按 Esc 放弃本次修改，点击手柄之外保存并退出。
+/// 右键分区可增加横向或纵向分割，右键分割线删除指针所在的线段；
+/// 松开 Shift 保存到布局配置，按 Esc 放弃本次修改。
 ///
 /// 拖拽交互全部发生在自己的手柄窗口内，不经过全局监听；
 /// 全局监视器仍保持只读，不改变系统事件投递。
 ///
-/// 三个 Shift 手势的优先级（另两个在 SnapController）：
+/// 两个 Shift 手势的优先级（拖窗手势在 SnapController）：
 /// 1. 鼠标一旦参与就归 SnapController：任何鼠标按下、拖动或滚轮都会取消长按计时，
-///    所以「Shift 拖窗口」与「Shift 双击标题栏」期间不会顺带进编辑模式；
+///    所以 Shift 拖窗口期间不会顺带进编辑模式；
 ///    计时器到点时还会复查「只按住 Shift 且无鼠标键」，挡住计时窗口内漏掉的边界情况。
 /// 2. 长按满 1 秒进入编辑模式后编辑优先，本控制器通过 onEditingChanged 挂起 SnapController，
 ///    此时的 Shift 拖拽不再吸附窗口，退出编辑模式后自动恢复。
@@ -142,9 +144,7 @@ final class LayoutEditController {
 
 /// 分区之间的一条分割线：同一坐标上重合的分区边聚合而成，整线联动拖拽
 struct LayoutDivider {
-    enum Axis { case vertical, horizontal }
-
-    let axis: Axis
+    let axis: LayoutAxis
     /// 分割线在拖动轴上的比例坐标（0~1）
     var coordinate: Double
     /// 分割线沿自身方向的覆盖区间（另一轴的比例值）
@@ -157,7 +157,7 @@ struct LayoutDivider {
     let range: ClosedRange<Double>
 }
 
-/// 单个屏幕的编辑会话：一个穿透的展示层窗口 + 每条分割线一个可交互手柄窗口
+/// 单个屏幕的编辑会话：一个可接收右键的展示层窗口 + 每条分割线一个可交互手柄窗口
 final class ScreenEditSession {
     /// 边坐标聚类阈值（比例值）
     private static let epsilon = 0.005
@@ -244,7 +244,7 @@ final class ScreenEditSession {
     /// 同坐标的多段边一起移动，保持整线对齐（默认外接布局的竖线会带动 4 个分区）
     private static func computeDividers(specs: [ZoneSpec]) -> [LayoutDivider] {
         var result: [LayoutDivider] = []
-        for axis in [LayoutDivider.Axis.vertical, .horizontal] {
+        for axis in [LayoutAxis.vertical, .horizontal] {
             var edges: [(c: Double, index: Int, leading: Bool)] = []
             for (index, spec) in specs.enumerated() {
                 let start = axis == .vertical ? spec.x : spec.y
@@ -295,8 +295,11 @@ final class ScreenEditSession {
     // MARK: - 窗口装配
 
     private func buildOverlay() {
-        let window = makeWindow(frame: screen.frame, interactive: false)
+        let window = makeWindow(frame: screen.frame, interactive: true, level: .screenSaver)
         let view = EditOverlayView(visibleLocal: localRect(area))
+        view.onSplit = { [weak self] index, axis, mouse in
+            self?.split(zoneAt: index, axis: axis, mouse: mouse)
+        }
         window.contentView = view
         window.orderFrontRegardless()
         overlayWindow = window
@@ -328,6 +331,7 @@ final class ScreenEditSession {
                 // 拖拽结束后重聚类并重建手柄；延迟到事件处理结束，避免在回调中销毁事件来源窗口
                 DispatchQueue.main.async { self?.rebuildDividers() }
             }
+            view.onDelete = { [weak self] mouse in self?.removeDividerSegment(at: index, mouse: mouse) }
             window.contentView = view
             window.orderFrontRegardless()
             handleWindows.append(window)
@@ -344,7 +348,11 @@ final class ScreenEditSession {
         refreshOverlay()
     }
 
-    private func makeWindow(frame: CGRect, interactive: Bool) -> NSWindow {
+    private func makeWindow(
+        frame: CGRect,
+        interactive: Bool,
+        level: NSWindow.Level? = nil
+    ) -> NSWindow {
         // 手柄用非激活面板：点击不能激活本应用，否则后续 Shift 释放的
         // flagsChanged 会投递给自身，只读全局监视器就收不到、无法退出编辑
         let window: NSWindow = interactive
@@ -352,7 +360,7 @@ final class ScreenEditSession {
                       backing: .buffered, defer: false)
             : NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.level = interactive ? Self.handleLevel : .screenSaver
+        window.level = level ?? (interactive ? Self.handleLevel : .screenSaver)
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -362,6 +370,34 @@ final class ScreenEditSession {
     }
 
     // MARK: - 拖拽
+
+    private func split(zoneAt index: Int, axis: LayoutAxis, mouse: CGPoint) {
+        guard isActive else { return }
+        let coordinate = axis == .vertical
+            ? (mouse.x - area.minX) / area.width
+            : (area.maxY - mouse.y) / area.height
+        guard let updated = LayoutGeometry.splitting(
+            specs, zoneAt: index, axis: axis, coordinate: coordinate,
+            minimumSize: Self.minZoneSize) else { return }
+        specs = updated
+        rebuildDividers()
+    }
+
+    private func removeDividerSegment(at index: Int, mouse: CGPoint) {
+        guard isActive, dividers.indices.contains(index) else { return }
+        let divider = dividers[index]
+        let crossCoordinate = divider.axis == .vertical
+            ? (area.maxY - mouse.y) / area.height
+            : (mouse.x - area.minX) / area.width
+        guard let updated = LayoutGeometry.removingDividerSegment(
+            from: specs,
+            axis: divider.axis,
+            coordinate: divider.coordinate,
+            crossCoordinate: crossCoordinate,
+            tolerance: Self.epsilon) else { return }
+        specs = updated
+        rebuildDividers()
+    }
 
     private func drag(dividerAt index: Int, to mouse: CGPoint) {
         guard isActive, dividers.indices.contains(index) else { return }
@@ -422,12 +458,13 @@ final class ScreenEditSession {
 
 /// 手柄窗口的内容视图：捕获拖拽并显示缩放光标；本身不绘制，线条由展示层绘制
 final class DividerHandleView: NSView {
-    private let axis: LayoutDivider.Axis
+    private let axis: LayoutAxis
     var onHover: ((Bool) -> Void)?
     var onDrag: ((CGPoint) -> Void)?
     var onDragEnd: (() -> Void)?
+    var onDelete: ((CGPoint) -> Void)?
 
-    init(axis: LayoutDivider.Axis) {
+    init(axis: LayoutAxis) {
         self.axis = axis
         super.init(frame: .zero)
     }
@@ -466,6 +503,10 @@ final class DividerHandleView: NSView {
     override func mouseUp(with event: NSEvent) {
         onDragEnd?()
     }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onDelete?(NSEvent.mouseLocation)
+    }
 }
 
 /// 编辑模式的展示层：绘制分区轮廓、分割线与操作提示
@@ -474,6 +515,8 @@ final class EditOverlayView: NSView {
     private var zoneRects: [CGRect] = []
     private var dividerRects: [CGRect] = []
     private var activeIndex: Int?
+    private var pendingSplit: (zoneIndex: Int, mouse: CGPoint)?
+    var onSplit: ((Int, LayoutAxis, CGPoint) -> Void)?
 
     init(visibleLocal: CGRect) {
         self.visibleLocal = visibleLocal
@@ -510,8 +553,39 @@ final class EditOverlayView: NSView {
         drawHint()
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let index = zoneRects.firstIndex(where: { $0.contains(point) }) else { return }
+        pendingSplit = (index, NSEvent.mouseLocation)
+
+        let menu = NSMenu()
+        let vertical = NSMenuItem(title: "左右分割", action: #selector(splitVertically), keyEquivalent: "")
+        vertical.target = self
+        menu.addItem(vertical)
+        let horizontal = NSMenuItem(title: "上下分割", action: #selector(splitHorizontally), keyEquivalent: "")
+        horizontal.target = self
+        menu.addItem(horizontal)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func splitVertically() {
+        performSplit(axis: .vertical)
+    }
+
+    @objc private func splitHorizontally() {
+        performSplit(axis: .horizontal)
+    }
+
+    private func performSplit(axis: LayoutAxis) {
+        guard let pendingSplit else { return }
+        self.pendingSplit = nil
+        onSplit?(pendingSplit.zoneIndex, axis, pendingSplit.mouse)
+    }
+
     private func drawHint() {
-        let text = "拖动分割线调整分区 · 松开 Shift 保存 · Esc 放弃"
+        let text = "拖动调整 · 右键分区新增 · 右键分割线删除 · 松开 Shift 保存 · Esc 放弃"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
             .foregroundColor: NSColor.white,

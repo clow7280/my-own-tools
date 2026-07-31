@@ -19,6 +19,8 @@ private enum StatsCoreChecks {
             try self.checkLayoutNormalization()
             try self.checkLayoutSharedEdgeRounding()
             try self.checkLayoutEditRoundTrip()
+            try self.checkLayoutAddRemoveDividers()
+            try self.checkLayoutFocusRect()
             try self.checkLayoutZoneRects()
             print("StatsCoreChecks: all checks passed")
         } catch {
@@ -550,6 +552,138 @@ private enum StatsCoreChecks {
                 visited.count > 50,
                 "\(axis.name)：分割线只停在 \(visited.count) 个位置，移动序列没有覆盖足够多的取整场景")
         }
+    }
+
+    /// 编辑器新增与删除线段的纯几何契约：分割后不退化，T 形边删除后不重叠也不留洞。
+    private static func checkLayoutAddRemoveDividers() throws {
+        let whole = [ZoneSpec(name: "工作区", x: 0, y: 0, w: 1, h: 1)]
+        guard let vertical = LayoutGeometry.splitting(
+            whole, zoneAt: 0, axis: .vertical, coordinate: 0.4) else {
+            throw CheckFailure("整屏分区应能增加竖分割线")
+        }
+        try self.expect(vertical.count == 2, "竖分割产生两个分区")
+        try self.expect(
+            vertical[0] == ZoneSpec(name: "工作区·左", x: 0, y: 0, w: 0.4, h: 1)
+                && vertical[1] == ZoneSpec(name: "工作区·右", x: 0.4, y: 0, w: 0.6, h: 1),
+            "竖分割保留覆盖范围并追加方向名称")
+
+        guard let clamped = LayoutGeometry.splitting(
+            whole, zoneAt: 0, axis: .horizontal, coordinate: 0.01) else {
+            throw CheckFailure("靠近边缘的横分割应夹到最小尺寸")
+        }
+        try self.expect(clamped[0].h == 0.1 && clamped[1].y == 0.1, "横分割两端至少保留 10%")
+        try self.expect(
+            LayoutGeometry.splitting(
+                [ZoneSpec(x: 0, y: 0, w: 0.19, h: 1)],
+                zoneAt: 0, axis: .vertical, coordinate: 0.1) == nil,
+            "宽度不足两个最小分区时拒绝新增竖线")
+
+        guard let merged = LayoutGeometry.removingDividerSegment(
+            from: vertical, axis: .vertical, coordinate: 0.4, crossCoordinate: 0.5) else {
+            throw CheckFailure("简单竖分割应能删除")
+        }
+        try self.expect(merged.count == 1, "删除简单竖线后恢复单分区")
+        try self.expect(
+            merged[0].x == 0 && merged[0].y == 0 && merged[0].w == 1 && merged[0].h == 1,
+            "删除简单竖线后覆盖整屏")
+        try self.expect(merged[0].name == "工作区", "新增后立即删除应恢复原分区名称")
+
+        // 上方一个大区、下方两个小区。删除左半段横线时，先把上方大区沿 x=0.5 拆开，
+        // 再将左上与左下合并；右半段横线仍保留。
+        let tee = [
+            ZoneSpec(name: "上", x: 0, y: 0, w: 1, h: 0.5),
+            ZoneSpec(name: "下左", x: 0, y: 0.5, w: 0.5, h: 0.5),
+            ZoneSpec(name: "下右", x: 0.5, y: 0.5, w: 0.5, h: 0.5),
+        ]
+        guard let withoutLeftSegment = LayoutGeometry.removingDividerSegment(
+            from: tee, axis: .horizontal, coordinate: 0.5, crossCoordinate: 0.25) else {
+            throw CheckFailure("T 形连接的左半段横线应能删除")
+        }
+        try self.expect(withoutLeftSegment.count == 3, "T 形线段删除后仍为三个矩形")
+        try self.expect(
+            withoutLeftSegment.contains {
+                $0.x == 0 && $0.y == 0 && $0.w == 0.5 && $0.h == 1
+            },
+            "左上与左下合并成全高左区")
+        try self.expect(
+            withoutLeftSegment.contains {
+                $0.x == 0.5 && $0.y == 0 && $0.w == 0.5 && $0.h == 0.5
+            } && withoutLeftSegment.contains {
+                $0.x == 0.5 && $0.y == 0.5 && $0.w == 0.5 && $0.h == 0.5
+            },
+            "右半段横线及其上下分区保持不变")
+        let covered = withoutLeftSegment.reduce(0.0) { $0 + $1.w * $1.h }
+        try self.expect(abs(covered - 1) < 1e-12, "删除 T 形线段后总覆盖率仍为 100%")
+        for (index, lhs) in withoutLeftSegment.enumerated() {
+            for rhs in withoutLeftSegment.dropFirst(index + 1) {
+                let overlapWidth = min(lhs.x + lhs.w, rhs.x + rhs.w) - max(lhs.x, rhs.x)
+                let overlapHeight = min(lhs.y + lhs.h, rhs.y + rhs.h) - max(lhs.y, rhs.y)
+                try self.expect(
+                    overlapWidth <= 1e-12 || overlapHeight <= 1e-12,
+                    "删除 T 形线段后分区不得重叠")
+                }
+        }
+
+        try self.expect(
+            LayoutGeometry.removingDividerSegment(
+                from: tee, axis: .horizontal, coordinate: 0.5, crossCoordinate: 0.5) == nil,
+            "指针正落在 T 形交点时不得猜测要删除哪一段")
+        let gapped = [
+            ZoneSpec(x: 0, y: 0, w: 0.498, h: 1),
+            ZoneSpec(x: 0.502, y: 0, w: 0.498, h: 1),
+        ]
+        try self.expect(
+            LayoutGeometry.removingDividerSegment(
+                from: gapped, axis: .vertical, coordinate: 0.5, crossCoordinate: 0.5) == nil,
+            "聚类成同一视觉线的近邻分区若实际有缝隙，不得直接合并并填掉缝隙")
+
+        try self.expect(
+            LayoutGeometry.removingDividerSegment(
+                from: whole, axis: .vertical, coordinate: 0.5, crossCoordinate: 0.5) == nil,
+            "没有相邻边时拒绝删除")
+    }
+
+    private static func checkLayoutFocusRect() throws {
+        let area = CGRect(x: -300, y: 100, width: 1200, height: 800)
+        try self.expect(
+            LayoutGeometry.focusRect(windowSize: CGSize(width: 600, height: 400), in: area)
+                == CGRect(x: 0, y: 300, width: 600, height: 400),
+            "专注布局保留原尺寸并在非零原点可用区域内居中")
+        try self.expect(
+            LayoutGeometry.focusRect(windowSize: CGSize(width: 1800, height: 900), in: area) == area,
+            "专注布局先把超大窗口夹到可用区域")
+        try self.expect(
+            LayoutGeometry.focusRect(windowSize: CGSize(width: -20, height: 200), in: area)
+                == CGRect(x: 300, y: 400, width: 0, height: 200),
+            "专注布局不产生负尺寸")
+
+        let fullScreenFrame = CGRect(x: 0, y: 0, width: 1200, height: 800)
+        let savedSize = CGSize(width: 640, height: 480)
+        try self.expect(
+            LayoutGeometry.restoredFocusSize(
+                currentFrame: fullScreenFrame,
+                appliedFullScreenFrame: fullScreenFrame,
+                savedSize: savedSize) == savedSize,
+            "窗口仍处于已应用的全屏框时恢复全屏前尺寸")
+        try self.expect(
+            LayoutGeometry.restoredFocusSize(
+                currentFrame: fullScreenFrame.offsetBy(dx: 3, dy: -2),
+                appliedFullScreenFrame: fullScreenFrame,
+                savedSize: savedSize) == savedSize,
+            "应用自身产生容差内偏差时仍恢复全屏前尺寸")
+        try self.expect(
+            LayoutGeometry.restoredFocusSize(
+                currentFrame: CGRect(x: 0, y: 0, width: 1000, height: 800),
+                appliedFullScreenFrame: fullScreenFrame,
+                savedSize: savedSize) == nil,
+            "窗口被手动缩放后不恢复过期尺寸")
+        try self.expect(
+            LayoutGeometry.restoredFocusSize(
+                currentFrame: fullScreenFrame,
+                appliedFullScreenFrame: fullScreenFrame,
+                savedSize: savedSize,
+                tolerance: -.infinity) == nil,
+            "非法容差不能命中旧的全屏状态")
     }
 
     /// 比例到矩形的换算，重点是纵向翻转：配置的 y 原点在左上，Cocoa 在左下。

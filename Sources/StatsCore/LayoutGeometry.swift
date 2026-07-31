@@ -68,6 +68,11 @@ public struct LayoutConfig: Codable {
     """
 }
 
+public enum LayoutAxis: Equatable {
+    case vertical
+    case horizontal
+}
+
 /// 分区的纯几何：数值合法性判定与比例到矩形的换算。
 /// 可用区域由调用方以矩形传入，这里不碰 NSScreen，无显示器环境也能校验。
 public enum LayoutGeometry {
@@ -103,5 +108,223 @@ public enum LayoutGeometry {
 
     public static func rects(for specs: [ZoneSpec], in area: CGRect) -> [CGRect] {
         specs.map { rect(for: $0, in: area) }
+    }
+
+    /// 专注布局：保留窗口尺寸并放到可用区域中央，超出可用区域的尺寸先夹取。
+    public static func focusRect(windowSize: CGSize, in area: CGRect) -> CGRect {
+        let fitted = CGSize(
+            width: min(max(windowSize.width, 0), area.width),
+            height: min(max(windowSize.height, 0), area.height))
+        return CGRect(
+            x: area.midX - fitted.width / 2,
+            y: area.midY - fitted.height / 2,
+            width: fitted.width,
+            height: fitted.height)
+    }
+
+    /// 窗口仍停在本工具上次应用的全屏框时，返回进入全屏前保存的专注尺寸。
+    ///
+    /// 少量误差用于兼容应用自身的尺寸夹取；一旦用户移动或缩放超过容差，
+    /// 旧尺寸立即失效，后续专注应改用窗口新的当前尺寸。
+    public static func restoredFocusSize(
+        currentFrame: CGRect,
+        appliedFullScreenFrame: CGRect,
+        savedSize: CGSize,
+        tolerance: CGFloat = 4
+    ) -> CGSize? {
+        guard tolerance.isFinite, tolerance >= 0,
+              savedSize.width.isFinite, savedSize.height.isFinite,
+              savedSize.width >= 0, savedSize.height >= 0 else { return nil }
+        let offsets = [
+            abs(currentFrame.minX - appliedFullScreenFrame.minX),
+            abs(currentFrame.minY - appliedFullScreenFrame.minY),
+            abs(currentFrame.width - appliedFullScreenFrame.width),
+            abs(currentFrame.height - appliedFullScreenFrame.height),
+        ]
+        guard offsets.allSatisfy({ $0.isFinite && $0 <= tolerance }) else { return nil }
+        return savedSize
+    }
+
+    /// 在指定分区内增加一条分割线。
+    /// coordinate 使用整个可用区域的比例坐标；落点会夹在分区两端的最小尺寸之外。
+    public static func splitting(
+        _ specs: [ZoneSpec],
+        zoneAt index: Int,
+        axis: LayoutAxis,
+        coordinate: Double,
+        minimumSize: Double = 0.1
+    ) -> [ZoneSpec]? {
+        guard specs.indices.contains(index), coordinate.isFinite,
+              minimumSize.isFinite, minimumSize > 0 else { return nil }
+        let zone = specs[index]
+        let start = axis == .vertical ? zone.x : zone.y
+        let size = axis == .vertical ? zone.w : zone.h
+        guard size >= minimumSize * 2 else { return nil }
+
+        let split = min(max(coordinate, start + minimumSize), start + size - minimumSize)
+        var first = zone
+        var second = zone
+        switch axis {
+        case .vertical:
+            first.w = split - zone.x
+            second.x = split
+            second.w = zone.x + zone.w - split
+            first.name = directionalName(zone.name, suffix: "左")
+            second.name = directionalName(zone.name, suffix: "右")
+        case .horizontal:
+            first.h = split - zone.y
+            second.y = split
+            second.h = zone.y + zone.h - split
+            first.name = directionalName(zone.name, suffix: "上")
+            second.name = directionalName(zone.name, suffix: "下")
+        }
+
+        var result = specs
+        result.replaceSubrange(index...index, with: [first, second])
+        return validZones(result).count == result.count ? result : nil
+    }
+
+    /// 删除指针所在的一段分割线。
+    ///
+    /// T 形连接两侧跨度不一致时，先沿交叠区边界把较大的分区切开，再合并线段两侧，
+    /// 因而只移除当前线段，其他分割线与整体覆盖范围保持不变。
+    public static func removingDividerSegment(
+        from specs: [ZoneSpec],
+        axis: LayoutAxis,
+        coordinate: Double,
+        crossCoordinate: Double,
+        tolerance: Double = 0.005
+    ) -> [ZoneSpec]? {
+        guard coordinate.isFinite, crossCoordinate.isFinite,
+              tolerance.isFinite, tolerance >= 0 else { return nil }
+
+        let leading = specs.indices.filter { index in
+            let zone = specs[index]
+            let edge = axis == .vertical ? zone.x + zone.w : zone.y + zone.h
+            return abs(edge - coordinate) <= tolerance
+                && crossInterval(of: zone, axis: axis)
+                    .contains(crossCoordinate, tolerance: ratioEpsilon)
+        }
+        let trailing = specs.indices.filter { index in
+            let zone = specs[index]
+            let edge = axis == .vertical ? zone.x : zone.y
+            return abs(edge - coordinate) <= tolerance
+                && crossInterval(of: zone, axis: axis)
+                    .contains(crossCoordinate, tolerance: ratioEpsilon)
+        }
+        // 指针正落在 T 形或十字交点时，同一侧可能同时命中两块。
+        // 此时不猜用户想删哪一段；移入明确线段后候选才会各剩一个。
+        guard leading.count == 1, trailing.count == 1,
+              let leadingIndex = leading.first, let trailingIndex = trailing.first,
+              leadingIndex != trailingIndex else { return nil }
+
+        let first = specs[leadingIndex]
+        let second = specs[trailingIndex]
+        let firstEdge = axis == .vertical ? first.x + first.w : first.y + first.h
+        let secondEdge = axis == .vertical ? second.x : second.y
+        // 分割线聚类容许 0.5% 的视觉误差，但删除只能合并真正相邻的矩形，
+        // 不能顺手填掉手写配置原本保留的细缝。
+        guard abs(firstEdge - secondEdge) <= ratioEpsilon else { return nil }
+        let firstCross = crossInterval(of: first, axis: axis)
+        let secondCross = crossInterval(of: second, axis: axis)
+        let overlapLower = max(firstCross.lowerBound, secondCross.lowerBound)
+        let overlapUpper = min(firstCross.upperBound, secondCross.upperBound)
+        guard overlapUpper - overlapLower > ratioEpsilon else { return nil }
+        let overlap = overlapLower...overlapUpper
+        guard overlap.contains(crossCoordinate, tolerance: tolerance) else { return nil }
+
+        let merged = mergedZone(first, second, axis: axis, cross: overlap)
+        let leadingRemainders = crossRemainders(of: first, removing: overlap, axis: axis)
+        let trailingRemainders = crossRemainders(of: second, removing: overlap, axis: axis)
+
+        var result: [ZoneSpec] = []
+        for index in specs.indices {
+            if index == leadingIndex {
+                result.append(contentsOf: leadingRemainders.prefix(1))
+                result.append(merged)
+                result.append(contentsOf: leadingRemainders.dropFirst())
+            } else if index == trailingIndex {
+                result.append(contentsOf: trailingRemainders)
+            } else {
+                result.append(specs[index])
+            }
+        }
+        return validZones(result).count == result.count ? result : nil
+    }
+
+    private static func directionalName(_ name: String?, suffix: String) -> String? {
+        guard let name, !name.isEmpty else { return nil }
+        return "\(name)·\(suffix)"
+    }
+
+    private static func crossInterval(of zone: ZoneSpec, axis: LayoutAxis) -> ClosedRange<Double> {
+        axis == .vertical ? zone.y...(zone.y + zone.h) : zone.x...(zone.x + zone.w)
+    }
+
+    private static func mergedZone(
+        _ leading: ZoneSpec,
+        _ trailing: ZoneSpec,
+        axis: LayoutAxis,
+        cross: ClosedRange<Double>
+    ) -> ZoneSpec {
+        let name = mergedName(leading.name, trailing.name, axis: axis)
+        switch axis {
+        case .vertical:
+            let right = trailing.x + trailing.w
+            return ZoneSpec(name: name, x: leading.x, y: cross.lowerBound,
+                            w: right - leading.x, h: cross.upperBound - cross.lowerBound)
+        case .horizontal:
+            let bottom = trailing.y + trailing.h
+            return ZoneSpec(name: name, x: cross.lowerBound, y: leading.y,
+                            w: cross.upperBound - cross.lowerBound, h: bottom - leading.y)
+        }
+    }
+
+    private static func mergedName(_ leading: String?, _ trailing: String?, axis: LayoutAxis) -> String? {
+        let suffixes = axis == .vertical ? ("·左", "·右") : ("·上", "·下")
+        if let leading, let trailing,
+           leading.hasSuffix(suffixes.0), trailing.hasSuffix(suffixes.1) {
+            let leadingBase = String(leading.dropLast(suffixes.0.count))
+            let trailingBase = String(trailing.dropLast(suffixes.1.count))
+            if leadingBase == trailingBase { return leadingBase }
+        }
+        return leading ?? trailing
+    }
+
+    private static func crossRemainders(
+        of zone: ZoneSpec,
+        removing removed: ClosedRange<Double>,
+        axis: LayoutAxis
+    ) -> [ZoneSpec] {
+        let interval = crossInterval(of: zone, axis: axis)
+        var result: [ZoneSpec] = []
+        if removed.lowerBound - interval.lowerBound > ratioEpsilon {
+            result.append(zone.withCrossInterval(interval.lowerBound...removed.lowerBound, axis: axis))
+        }
+        if interval.upperBound - removed.upperBound > ratioEpsilon {
+            result.append(zone.withCrossInterval(removed.upperBound...interval.upperBound, axis: axis))
+        }
+        return result
+    }
+}
+
+private extension ZoneSpec {
+    func withCrossInterval(_ interval: ClosedRange<Double>, axis: LayoutAxis) -> ZoneSpec {
+        var result = self
+        switch axis {
+        case .vertical:
+            result.y = interval.lowerBound
+            result.h = interval.upperBound - interval.lowerBound
+        case .horizontal:
+            result.x = interval.lowerBound
+            result.w = interval.upperBound - interval.lowerBound
+        }
+        return result
+    }
+}
+
+private extension ClosedRange<Double> {
+    func contains(_ value: Double, tolerance: Double) -> Bool {
+        value >= lowerBound - tolerance && value <= upperBound + tolerance
     }
 }

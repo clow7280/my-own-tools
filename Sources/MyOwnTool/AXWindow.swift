@@ -7,23 +7,9 @@ struct AXWindow {
 
     private static let systemWide = AXUIElementCreateSystemWide()
 
-    /// 标题栏判定带高：命中点距窗口顶边不超过此值才算点在标题栏上
-    private static let titleBarHeight: CGFloat = 30
-
     /// 查找指定位置的窗口（point 为 AX 坐标）
     static func window(atAX point: CGPoint) -> AXWindow? {
         hitTest(atAX: point)?.window
-    }
-
-    /// 查找指定位置标题栏所属的窗口（point 为 AX 坐标）。
-    /// 命中按钮（关闭/缩放、工具栏按钮）或命中点不在窗口顶部标题栏带内时返回 nil。
-    static func titleBarWindow(atAX point: CGPoint) -> AXWindow? {
-        guard let hit = hitTest(atAX: point) else { return nil }
-        if role(of: hit.element) == kAXButtonRole { return nil }
-        guard let frame = hit.window.frame else { return nil }
-        let depth = point.y - frame.minY      // AX 坐标 minY 即窗口顶边
-        guard depth >= 0, depth <= titleBarHeight else { return nil }
-        return hit.window
     }
 
     /// 命中测试：返回命中元素与其所属窗口，供不同手势自行判定命中区域

@@ -70,7 +70,7 @@ final class SettingsPage: FlippedView {
         let card = CardView()
         var y: CGFloat = 2
 
-        _ = addRow("拖拽分屏", subtitle: "Shift 拖动吸附分区，双击标题栏循环布局", y: y, in: card)
+        _ = addRow("拖拽分屏", subtitle: "Shift 拖动吸附分区、全屏或专注布局", y: y, in: card)
         snapSwitch.controlSize = .small
         snapSwitch.target = self
         snapSwitch.action = #selector(toggleSnap)
