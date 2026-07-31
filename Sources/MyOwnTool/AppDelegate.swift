@@ -1,4 +1,3 @@
-import AIUsageCore
 import AppKit
 import ServiceManagement
 
@@ -16,12 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let permissionFastChecks = 30
     private static let permissionSlowInterval: TimeInterval = 30
 
-    // 唯一的菜单栏项：系统状态区（网速 + 竖柱 + AI 用量环），点击弹详情窗
+    // 唯一的菜单栏项：系统状态区（网速 + CPU/GPU/RAM 竖柱），点击弹详情窗
     private var statsItem: NSStatusItem?
     private var statsBarView: StatsBarView?
     private var statsPopup: StatsPopupController?
     private let statsMonitor = StatsMonitor()
-    private let aiMonitor = AIUsageMonitor()
 
     /// 登录项注册要求以 .app 形式运行；swift build 的裸二进制不支持
     private var isRunningFromBundle: Bool {
@@ -65,7 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 编辑控制器持有长按定时器、全局与本地事件监视器和覆盖窗口，退出前一并撤掉
         layoutEditController.stop()
         statsMonitor.stop()
-        aiMonitor.stop()
     }
 
     /// 用一次性定时器逐次重排而不是重复定时器，间隔才能随等待时长变化
@@ -115,51 +112,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.statsPopup?.update(history: self.statsMonitor.history)
         }
         statsMonitor.start()
-
-        aiMonitor.onUpdate = { [weak self] in
-            guard let self else { return }
-            let states = Dictionary(uniqueKeysWithValues: AIProviderPresentationRegistry.menuBar.map {
-                ($0.id, self.aiMonitor.state($0.id))
-            })
-            self.statsBarView?.updateAIUsage(states)
-            self.statsPopup?.refreshAI()
-        }
-        aiMonitor.start()
     }
 
     @objc private func toggleStatsPopup() {
         guard let button = statsItem?.button else { return }
         if statsPopup == nil {
-            statsPopup = StatsPopupController(settingsActions: makeSettingsActions(),
-                                              aiProviders: makeAIProviders())
+            statsPopup = StatsPopupController(settingsActions: makeSettingsActions())
         }
-        statsPopup?.toggle(relativeTo: button,
-                           history: statsMonitor.history,
-                           preferredTab: preferredTab(for: button))
-    }
-
-    /// 状态项内的点击位置决定弹窗初始选项卡；左右键一致。
-    /// 键盘或辅助功能触发时取不到鼠标坐标，返回 nil 让弹窗保持当前选项卡。
-    private func preferredTab(for button: NSStatusBarButton) -> Int? {
-        guard let event = NSApp.currentEvent, event.window === button.window else { return nil }
-        switch event.type {
-        case .leftMouseUp, .rightMouseUp, .otherMouseUp,
-             .leftMouseDown, .rightMouseDown, .otherMouseDown:
-            // StatsBarView 是 button 的子视图且原点 x 为 0，按钮坐标可直接当作视图坐标
-            return StatsBarView.preferredTabIndex(forClickX: button.convert(event.locationInWindow, from: nil).x)
-        default:
-            return nil
-        }
-    }
-
-    /// AI 页由 presentation registry 自动装配；新增厂商不再修改 AppDelegate。
-    private func makeAIProviders() -> [AIProviderSpec] {
-        AIProviderPresentationRegistry.all.map { presentation in
-            AIProviderSpec(
-                presentation: presentation,
-                state: { [aiMonitor] in aiMonitor.state(presentation.id) },
-                refresh: { [aiMonitor] in aiMonitor.refresh(presentation.id) })
-        }
+        statsPopup?.toggle(relativeTo: button, history: statsMonitor.history)
     }
 
     /// 设置页所需的状态与动作
@@ -187,10 +147,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NSLog("MyOwnTools: 切换开机自启失败：\(error.localizedDescription)")
                 }
             },
-            aiRefreshInterval: { AIUsageMonitor.interval },
-            setAIRefreshInterval: { [aiMonitor] in aiMonitor.setInterval($0) },
-            aiStaleInterval: { AIUsageMonitor.staleInterval },
-            setAIStaleInterval: { [aiMonitor] in aiMonitor.setStaleInterval($0) },
             openConfig: {
                 LayoutStore.writeDefaultIfMissing()
                 LayoutStore.startWatching()     // 目录可能刚创建，补挂监视

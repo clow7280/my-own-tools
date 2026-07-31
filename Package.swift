@@ -6,17 +6,11 @@ let package = Package(
     // 枚举形式的 .v15 要求 swift-tools-version 6.0，这里保持 5.9 并用等价的版本字符串
     platforms: [.macOS("15.0")],
     targets: [
-        .target(name: "AIUsageCore", path: "Sources/AIUsageCore"),
         .target(name: "StatsCore", path: "Sources/StatsCore"),
         .executableTarget(
             name: "MyOwnTools",
-            dependencies: ["AIUsageCore", "StatsCore"],
+            dependencies: ["StatsCore"],
             path: "Sources/MyOwnTool"
-        ),
-        .executableTarget(
-            name: "AIUsageCoreChecks",
-            dependencies: ["AIUsageCore"],
-            path: "Tests/AIUsageCoreChecks"
         ),
         .executableTarget(
             name: "StatsCoreChecks",

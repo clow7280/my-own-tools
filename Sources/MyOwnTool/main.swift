@@ -3,9 +3,6 @@ import AppKit
 if CommandLine.arguments.contains("--stats-probe") {
     StatsProbe.run()
 }
-if CommandLine.arguments.contains("--ai-probe") {
-    AIProbe.run()
-}
 
 // AppKit 的入口固定运行在主线程；显式建立 MainActor 边界，避免把该约束
 // 隐藏在各个控制器的 unchecked Sendable 声明中。

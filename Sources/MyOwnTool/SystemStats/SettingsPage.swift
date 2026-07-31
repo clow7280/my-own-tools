@@ -1,4 +1,3 @@
-import AIUsageCore
 import AppKit
 
 // MARK: - 设置页
@@ -10,10 +9,6 @@ struct SettingsActions {
     var setSnapEnabled: (Bool) -> Void
     var loginItemState: () -> Bool?   // nil = 非 .app 运行，不可用
     var setLoginItem: (Bool) -> Void
-    var aiRefreshInterval: () -> TimeInterval
-    var setAIRefreshInterval: (TimeInterval) -> Void
-    var aiStaleInterval: () -> TimeInterval
-    var setAIStaleInterval: (TimeInterval) -> Void
     var openConfig: () -> Void
     var openAXSettings: () -> Void
     var lastLayoutLoad: () -> Date?
@@ -21,7 +16,7 @@ struct SettingsActions {
     var quit: () -> Void
 }
 
-/// 拖拽分屏 / AI 用量 / 开机自启 / 版本与重启退出（设计稿 3c）
+/// 拖拽分屏 / 开机自启 / 版本与重启退出
 final class SettingsPage: FlippedView {
     private(set) var contentHeight: CGFloat = 0
 
@@ -33,8 +28,6 @@ final class SettingsPage: FlippedView {
     private let permissionButton = NSButton(title: "打开设置", target: nil, action: nil)
     private let loginSwitch = NSSwitch()
     private let loginSubtitle = PageUI.label(size: 10.5, color: .tertiaryLabelColor)
-    private let intervalPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let stalePopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
     private static let rowHeight: CGFloat = 44
 
@@ -44,7 +37,6 @@ final class SettingsPage: FlippedView {
 
         var y: CGFloat = 0
         y = buildSnapCard(top: y) + PageUI.cardGap
-        y = buildAICard(top: y) + PageUI.cardGap
         y = buildLoginCard(top: y) + PageUI.cardGap
         y = buildFooter(top: y)
         contentHeight = y
@@ -117,37 +109,6 @@ final class SettingsPage: FlippedView {
         return top + y
     }
 
-    /// AI 用量卡片：自动刷新间隔 + 数据过期阈值
-    private func buildAICard(top: CGFloat) -> CGFloat {
-        let card = CardView()
-        var y: CGFloat = 2
-
-        _ = addRow("AI 用量自动刷新", subtitle: "后台按此间隔拉取 ChatGPT、Claude 与 OpenCode 用量", y: y, in: card)
-        intervalPopup.controlSize = .small
-        intervalPopup.font = .systemFont(ofSize: 11)
-        intervalPopup.target = self
-        intervalPopup.action = #selector(changeInterval)
-        intervalPopup.removeAllItems()
-        intervalPopup.addItems(withTitles: AIUsageMonitor.intervalOptions.map(Self.intervalTitle))
-        placeTrailing(intervalPopup, y: y, size: NSSize(width: 84, height: 22), in: card)
-        y += Self.rowHeight
-        PageUI.separator(in: card, y: y)
-
-        _ = addRow("数据过期阈值", subtitle: "拉取失败超过该时长后，菜单栏叹号由黄转红", y: y, in: card)
-        stalePopup.controlSize = .small
-        stalePopup.font = .systemFont(ofSize: 11)
-        stalePopup.target = self
-        stalePopup.action = #selector(changeStaleInterval)
-        stalePopup.removeAllItems()
-        stalePopup.addItems(withTitles: AIUsageMonitor.staleOptions.map(Self.intervalTitle))
-        placeTrailing(stalePopup, y: y, size: NSSize(width: 84, height: 22), in: card)
-        y += Self.rowHeight
-
-        card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
-        addSubview(card)
-        return top + y
-    }
-
     private func buildLoginCard(top: CGFloat) -> CGFloat {
         let card = CardView()
         var y: CGFloat = 2
@@ -167,17 +128,12 @@ final class SettingsPage: FlippedView {
         return top + y
     }
 
-    /// 间隔秒数 → 「N 分钟」，整小时显示「N 小时」
-    private static func intervalTitle(_ seconds: TimeInterval) -> String {
-        seconds >= 3600 ? "\(Int(seconds / 3600)) 小时" : "\(Int(seconds / 60)) 分钟"
-    }
-
     private func buildFooter(top: CGFloat) -> CGFloat {
         let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
             ?? "MyOwnTools"
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? AIUsageVersion.short
+            ?? AppVersion.short
         let versionLabel = PageUI.label("\(appName) \(version)", size: 10,
                                         mono: true, color: .tertiaryLabelColor)
         versionLabel.frame = NSRect(x: 2, y: top + 6, width: 150, height: 13)
@@ -219,15 +175,6 @@ final class SettingsPage: FlippedView {
         permissionStatus.isHidden = !trusted
         permissionButton.isHidden = trusted
 
-        let interval = actions.aiRefreshInterval()
-        let intervalIndex = AIUsageMonitor.intervalOptions.firstIndex(of: interval) ?? 0
-        intervalPopup.selectItem(at: intervalIndex)
-
-        let stale = actions.aiStaleInterval()
-        let staleIndex = AIUsageMonitor.staleOptions.firstIndex(of: stale)
-            ?? AIUsageMonitor.staleOptions.firstIndex(of: AIUsageMonitor.defaultStaleInterval) ?? 0
-        stalePopup.selectItem(at: staleIndex)
-
         let login = actions.loginItemState()
         loginSwitch.isEnabled = login != nil
         loginSwitch.state = login == true ? .on : .off
@@ -244,16 +191,6 @@ final class SettingsPage: FlippedView {
         onShow()
     }
     @objc private func openAX() { actions.openAXSettings() }
-    @objc private func changeInterval() {
-        let index = intervalPopup.indexOfSelectedItem
-        guard AIUsageMonitor.intervalOptions.indices.contains(index) else { return }
-        actions.setAIRefreshInterval(AIUsageMonitor.intervalOptions[index])
-    }
-    @objc private func changeStaleInterval() {
-        let index = stalePopup.indexOfSelectedItem
-        guard AIUsageMonitor.staleOptions.indices.contains(index) else { return }
-        actions.setAIStaleInterval(AIUsageMonitor.staleOptions[index])
-    }
     @objc private func restart() { actions.restart() }
     @objc private func quit() { actions.quit() }
 

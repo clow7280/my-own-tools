@@ -1,4 +1,3 @@
-import AIUsageCore
 import Foundation
 import StatsCore
 
@@ -84,59 +83,5 @@ enum StatsProbe {
         let ip = fetcher.current.map { "\($0.ip) · \($0.note ?? "?")" } ?? "获取失败"
         print("公网 IP（cip.cc）: \(ip)")
         exit(0)
-    }
-}
-
-/// AI 用量探针：与 App 共享 provider registry 和 strategy pipeline，不直接点名具体 Reader。
-enum AIProbe {
-    static func run() -> Never {
-        print("== MyOwnTools AI 用量探针 ==")
-        let group = DispatchGroup()
-        for descriptor in AIProviderRegistry.descriptors {
-            group.enter()
-            descriptor.pipeline.fetch(context: .userInitiated) { outcome in
-                print(self.format(descriptor, outcome))
-                group.leave()
-            }
-        }
-        // OpenCode 需先读浏览器 Keychain，再串行取得工作区和用量页；给完整流程留足上限。
-        let deadline = Date().addingTimeInterval(45)
-        var done = false
-        group.notify(queue: .main) { done = true }
-        while !done && Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.2))
-        }
-        if !done { print("[超时：部分数据未返回，可能是 Keychain 授权未完成]") }
-        exit(0)
-    }
-
-    private static func format(_ descriptor: AIProviderDescriptor, _ outcome: AIUsageFetchOutcome) -> String {
-        var lines = ["\(descriptor.displayName):"]
-        switch outcome.result {
-        case let .success(result):
-            let quality = result.source.quality.rawValue
-            let plan = result.snapshot.plan?.displayName ?? "—"
-            lines[0] += " source=\(result.source.label) quality=\(quality) plan=\(plan)"
-            for window in result.snapshot.windows + result.snapshot.extraWindows {
-                let value: String = switch window.value {
-                case let .measured(fraction): String(format: "%.0f%%", fraction * 100)
-                case .notEnforced: "不限额"
-                case .unavailable: "—"
-                }
-                let reset = window.resetsAt.map { " reset=\($0)" } ?? ""
-                let segments = window.segments.isEmpty ? "" : " segments=\(window.segments.count)"
-                lines.append("  \(window.title ?? window.id.rawValue)=\(value)\(reset)\(segments)")
-            }
-            for issue in result.partialFailures {
-                lines.append("  可选数据：\(issue.kind.rawValue) — \(issue.message)")
-            }
-        case let .failure(failure):
-            lines[0] += " 失败：\(failure.kind.rawValue) — \(failure.message)"
-        }
-        for attempt in outcome.attempts where attempt.failure != nil {
-            let availability = attempt.wasAvailable ? "failed" : "unavailable"
-            lines.append("  attempt \(attempt.strategyID): \(availability)/\(attempt.failure!.kind.rawValue)")
-        }
-        return lines.joined(separator: "\n")
     }
 }

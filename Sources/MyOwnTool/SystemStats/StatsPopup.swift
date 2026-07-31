@@ -1,6 +1,6 @@
 import AppKit
 
-/// 点击菜单栏状态区弹出的详情窗：系统 / AI / 设置三个选项卡。
+/// 点击菜单栏状态区弹出的详情窗：系统 / 设置两个选项卡。
 /// 仿 Stats：无边框毛玻璃窗挂在菜单栏正下方；宽 348pt 固定，高度随选项卡内容变化。
 /// 失焦关闭三重保障：resignKey、全局鼠标按下监视器、应用失活通知——
 /// 协作式激活下 accessory 应用的窗口可能始终成不了 key window，只靠 resignKey 不可靠。
@@ -14,10 +14,8 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     private let window: PopupWindow
     private let tabs: NSSegmentedControl
     private let systemPage = SystemPage(frame: .zero)
-    private let aiPage: AIPage
-    private let aiScrollView = NSScrollView(frame: .zero)
     private let settingsPage: SettingsPage
-    private var pages: [NSView] { [systemPage, aiScrollView, settingsPage] }
+    private var pages: [NSView] { [systemPage, settingsPage] }
 
     private var history: [StatsSample] = []
     private var lastClose = Date.distantPast
@@ -25,12 +23,11 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     /// 打开时记录的锚点：状态项中心 X、菜单栏下缘 Y 与屏幕可见区，切换选项卡改高度时复用
     private var anchor: (midX: CGFloat, top: CGFloat, screen: NSRect?)?
 
-    init(settingsActions: SettingsActions, aiProviders: [AIProviderSpec]) {
+    init(settingsActions: SettingsActions) {
         window = PopupWindow(size: NSSize(width: Self.width, height: 200))
         settingsPage = SettingsPage(actions: settingsActions)
-        aiPage = AIPage(providers: aiProviders)
 
-        tabs = NSSegmentedControl(labels: ["系统", "AI", "设置"],
+        tabs = NSSegmentedControl(labels: ["系统", "设置"],
                                   trackingMode: .selectOne, target: nil, action: nil)
         super.init()
 
@@ -40,13 +37,6 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         tabs.target = self
         tabs.action = #selector(tabChanged)
         tabs.selectedSegment = 0
-
-        aiScrollView.documentView = aiPage
-        aiScrollView.drawsBackground = false
-        aiScrollView.hasVerticalScroller = true
-        aiScrollView.hasHorizontalScroller = false
-        aiScrollView.autohidesScrollers = true
-        aiScrollView.scrollerStyle = .overlay
 
         let content = window.contentView!
         content.addSubview(tabs)
@@ -81,9 +71,7 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
 
     // MARK: - 显示控制
 
-    /// preferredTab：本次打开要选中的选项卡；nil（如键盘触发取不到点击坐标）保持当前选项卡。
-    /// 只在真正打开时生效，关闭与防抖拦截都不改选项卡。
-    func toggle(relativeTo button: NSStatusBarButton, history: [StatsSample], preferredTab: Int? = nil) {
+    func toggle(relativeTo button: NSStatusBarButton, history: [StatsSample]) {
         if window.isVisible {
             close()
             return
@@ -96,10 +84,6 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         anchor = (midX: buttonWindow.frame.midX,
                   top: buttonWindow.frame.minY - 6,
                   screen: buttonWindow.screen?.visibleFrame)
-        if let preferredTab, pages.indices.contains(preferredTab), preferredTab != tabs.selectedSegment {
-            tabs.selectedSegment = preferredTab
-            syncPageVisibility()
-        }
         refreshVisiblePage(justShown: true)
         applyLayout()
 
@@ -117,13 +101,6 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         self.history = history
         guard window.isVisible else { return }
         refreshVisiblePage()
-    }
-
-    /// AI 用量刷新时调用；卡片高度可能变化（模型条数量），AI 页可见时同步重排
-    func refreshAI() {
-        guard window.isVisible, tabs.selectedSegment == 1 else { return }
-        aiPage.update()
-        applyLayout()
     }
 
     private func close() {
@@ -175,18 +152,8 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
     private var currentPageHeight: CGFloat {
         switch tabs.selectedSegment {
         case 0: return systemPage.contentHeight
-        case 1: return min(aiPage.contentHeight, self.maximumAIPageHeight)
         default: return settingsPage.contentHeight
         }
-    }
-
-    private var maximumAIPageHeight: CGFloat {
-        let chrome = Self.padding * 2 + Self.tabHeight + Self.tabGap
-        guard let anchor, let screen = anchor.screen else {
-            return max(160, (NSScreen.main?.visibleFrame.height ?? 800) - chrome - 16)
-        }
-        let availableWindowHeight = max(200, anchor.top - screen.minY - 8)
-        return max(160, availableWindowHeight - chrome)
     }
 
     /// 按当前选项卡内容高度重设窗口尺寸与位置（挂在菜单栏下方、水平对齐状态项）
@@ -199,21 +166,10 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
         tabs.frame = NSRect(x: Self.padding, y: height - Self.padding - Self.tabHeight,
                             width: Self.width - Self.padding * 2, height: Self.tabHeight)
         for (index, page) in pages.enumerated() {
-            let own: CGFloat
-            switch index {
-            case 0: own = systemPage.contentHeight
-            case 1: own = min(aiPage.contentHeight, self.maximumAIPageHeight)
-            default: own = settingsPage.contentHeight
-            }
+            let own = index == 0 ? systemPage.contentHeight : settingsPage.contentHeight
             page.frame = NSRect(x: Self.padding, y: height - Self.padding - Self.tabHeight - Self.tabGap - own,
                                 width: Self.width - Self.padding * 2, height: own)
         }
-        aiPage.frame = NSRect(
-            x: 0,
-            y: 0,
-            width: Self.width - Self.padding * 2,
-            height: aiPage.contentHeight)
-        aiScrollView.hasVerticalScroller = aiPage.contentHeight > maximumAIPageHeight
 
         guard let anchor else { return }
         var origin = NSPoint(x: anchor.midX - Self.width / 2, y: anchor.top - height)
@@ -233,12 +189,6 @@ final class StatsPopupController: NSObject, NSWindowDelegate {
             systemPage.update(history)
             if justShown { systemPage.onShow() }
         case 1:
-            aiPage.update()
-            if justShown {
-                aiScrollView.contentView.scroll(to: .zero)
-                aiScrollView.reflectScrolledClipView(aiScrollView.contentView)
-            }
-        case 2:
             if justShown { settingsPage.onShow() }
         default: break
         }
