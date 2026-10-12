@@ -9,9 +9,7 @@ struct SettingsActions {
     var setSnapEnabled: (Bool) -> Void
     var loginItemState: () -> Bool?   // nil = 非 .app 运行，不可用
     var setLoginItem: (Bool) -> Void
-    var openConfig: () -> Void
     var openAXSettings: () -> Void
-    var lastLayoutLoad: () -> Date?
     var restart: () -> Void
     var quit: () -> Void
 }
@@ -22,7 +20,6 @@ final class SettingsPage: FlippedView {
 
     private let actions: SettingsActions
     private let snapSwitch = NSSwitch()
-    private let configSubtitle = PageUI.label(size: 10.5, color: .tertiaryLabelColor)
     private let permissionDot = DotView()
     private let permissionStatus = PageUI.label(size: 11, weight: .medium, color: .tertiaryLabelColor)
     private let permissionButton = NSButton(title: "打开设置", target: nil, action: nil)
@@ -75,18 +72,6 @@ final class SettingsPage: FlippedView {
         snapSwitch.target = self
         snapSwitch.action = #selector(toggleSnap)
         placeTrailing(snapSwitch, y: y, size: snapSwitch.intrinsicContentSize, in: card)
-        y += Self.rowHeight
-        PageUI.separator(in: card, y: y)
-
-        _ = addRow("分屏布局配置", subtitle: nil, y: y, in: card)
-        configSubtitle.frame = NSRect(x: PageUI.cardPadding, y: y + 24,
-                                      width: PageUI.innerWidth - 90, height: 13)
-        card.addSubview(configSubtitle)
-        let openButton = NSButton(title: "打开文件", target: self, action: #selector(openConfig))
-        openButton.bezelStyle = .rounded
-        openButton.controlSize = .small
-        openButton.font = .systemFont(ofSize: 11)
-        placeTrailing(openButton, y: y, size: NSSize(width: 76, height: 22), in: card)
         y += Self.rowHeight
         PageUI.separator(in: card, y: y)
 
@@ -163,12 +148,6 @@ final class SettingsPage: FlippedView {
     func onShow() {
         snapSwitch.state = actions.isSnapEnabled() ? .on : .off
 
-        var configText = "layouts.json · 保存即热重载"
-        if let loaded = actions.lastLayoutLoad() {
-            configText += " · 上次 " + Self.timeFormatter.string(from: loaded)
-        }
-        configSubtitle.stringValue = configText
-
         let trusted = actions.isTrusted()
         permissionDot.color = trusted ? .systemGreen : .systemRed
         permissionStatus.stringValue = "已授权"
@@ -186,19 +165,9 @@ final class SettingsPage: FlippedView {
         actions.setLoginItem(loginSwitch.state == .on)
         onShow()    // 注册可能失败，回读真实状态
     }
-    @objc private func openConfig() {
-        actions.openConfig()
-        onShow()
-    }
     @objc private func openAX() { actions.openAXSettings() }
     @objc private func restart() { actions.restart() }
     @objc private func quit() { actions.quit() }
-
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
 
     /// 权限状态圆点
     private final class DotView: NSView {

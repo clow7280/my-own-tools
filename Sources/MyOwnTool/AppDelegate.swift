@@ -147,13 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NSLog("MyOwnTools: 切换开机自启失败：\(error.localizedDescription)")
                 }
             },
-            openConfig: {
-                LayoutStore.writeDefaultIfMissing()
-                LayoutStore.startWatching()     // 目录可能刚创建，补挂监视
-                NSWorkspace.shared.open(LayoutStore.configURL)
-            },
             openAXSettings: { Permissions.openAccessibilitySettings() },
-            lastLayoutLoad: { LayoutStore.lastLoaded },
             restart: { [weak self] in self?.relaunch() },
             quit: { NSApp.terminate(nil) }
         )
