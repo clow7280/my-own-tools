@@ -17,12 +17,14 @@ enum StatsProbe {
         _ = net.sample()
 
         if let smc = SMCReader() {
-            // 四组键共用一次全量枚举，与 App 运行时走同一份分类和量程判据
+            // 六组键共用一次全量枚举，与 App 运行时走同一份分类和量程判据
             let smcKeys = smc.discoverTemperatureKeys()
             print("SMC CPU 温度键 (\(smcKeys.cpu.count)): \(smcKeys.cpu.joined(separator: " "))")
             print("SMC GPU 温度键 (\(smcKeys.gpu.count)): \(smcKeys.gpu.joined(separator: " "))")
             print("SMC 硬盘温度键 (\(smcKeys.disk.count)): \(smcKeys.disk.joined(separator: " "))")
             print("SMC 电池温度键 (\(smcKeys.battery.count)): \(smcKeys.battery.joined(separator: " "))")
+            print("SMC 内存温度键 (\(smcKeys.memory.count)): \(smcKeys.memory.joined(separator: " "))")
+            print("SMC SoC 温度键 (\(smcKeys.soc.count)): \(smcKeys.soc.joined(separator: " "))")
             func stats(_ keys: [String]) -> String {
                 let values = smc.temperatures(keys)
                 guard !values.isEmpty else { return "不可用" }
@@ -33,6 +35,8 @@ enum StatsProbe {
             print("GPU 温度: " + stats(smcKeys.gpu))
             print("硬盘温度: " + stats(smcKeys.disk))
             print("电池温度: " + stats(smcKeys.battery))
+            print("内存温度: " + stats(smcKeys.memory))
+            print("SoC 温度: " + stats(smcKeys.soc))
         } else {
             print("SMC: 连接失败，温度不可用")
         }

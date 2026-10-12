@@ -111,6 +111,8 @@ final class SMCReader {
         var gpu: [String] = []
         var disk: [String] = []
         var battery: [String] = []
+        var memory: [String] = []
+        var soc: [String] = []
     }
 
     /// 分组条件：一组前缀，外加可选后缀。
@@ -127,13 +129,16 @@ final class SMCReader {
         }
     }
 
-    /// Tp=P核 Te=E核 Tf=M3 系 CPU 簇；Tg=GPU；TH=硬盘/NAND；TB*T=电池。
+    /// Tp=P核 Te=E核 Tf=M3 系 CPU 簇；Tg=GPU；TH/T5SP=硬盘/NAND；TB*T=电池；
+    /// Tm/TVm=统一内存；TPMP/TPSP/TPD*=SoC 封装。
     /// 各代芯片的键名不同（M5 的 CPU 是 Tp00/Tp04/…），枚举过滤比按芯片代硬编码键名通用
     private static let temperatureGroups: [TemperatureGroup] = [
         TemperatureGroup(prefixes: ["Tp", "Te", "Tf"], field: \TemperatureKeys.cpu),
         TemperatureGroup(prefixes: ["Tg"], field: \TemperatureKeys.gpu),
-        TemperatureGroup(prefixes: ["TH"], field: \TemperatureKeys.disk),
+        TemperatureGroup(prefixes: ["TH", "T5SP"], field: \TemperatureKeys.disk),
         TemperatureGroup(prefixes: ["TB"], suffix: "T", field: \TemperatureKeys.battery),
+        TemperatureGroup(prefixes: ["Tm", "TVm"], field: \TemperatureKeys.memory),
+        TemperatureGroup(prefixes: ["TPMP", "TPSP", "TPD"], field: \TemperatureKeys.soc),
     ]
 
     /// 温度读数的合理量程，开区间两端都不取：下界滤掉未接传感器恒定返回的 0，

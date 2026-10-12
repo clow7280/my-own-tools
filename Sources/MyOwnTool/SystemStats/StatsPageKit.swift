@@ -32,10 +32,13 @@ enum PageUI {
     /// 卡片纵向间距
     static let cardGap: CGFloat = 10
 
-    // 指标行三列：标签 42 | 曲线自适应 | 数值（普通 52 / 带单位 76），列间距 10。
-    // 曲线列尾部由 SparklineView 自己让出 34pt 最值刻度列，行高与各列宽度不受影响
+    // 指标行三列：标签 42 | 曲线自适应 | 数值 76，列间距 8。
+    // 所有卡共用同一列宽，保证 sparkline 两端和右侧指标对齐；
+    // 曲线列尾部由 SparklineView 自己让出 34pt 最值刻度列。
     static let rowLabelWidth: CGFloat = 42
-    static let rowGap: CGFloat = 10
+    static let rowValueWidth: CGFloat = 76
+    static let rowGap: CGFloat = 8
+    static let rowValueSize: CGFloat = 14
 
     static func label(_ text: String = "", size: CGFloat, weight: NSFont.Weight = .regular,
                       mono: Bool = false, color: NSColor = .labelColor) -> NSTextField {

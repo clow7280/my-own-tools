@@ -22,9 +22,9 @@ final class SystemPage: FlippedView {
     private let cpuSpark = SparklineView()
     private let gpuSpark = SparklineView()
     private let ramSpark = SparklineView()
-    private let cpuValue = PageUI.label(size: 14, weight: .semibold, mono: true)
-    private let gpuValue = PageUI.label(size: 14, weight: .semibold, mono: true)
-    private let ramValue = PageUI.label(size: 14, weight: .semibold, mono: true)
+    private let cpuValue = PageUI.label(size: PageUI.rowValueSize, weight: .semibold, mono: true)
+    private let gpuValue = PageUI.label(size: PageUI.rowValueSize, weight: .semibold, mono: true)
+    private let ramValue = PageUI.label(size: PageUI.rowValueSize, weight: .semibold, mono: true)
     private let cpuCoresInfo = PageUI.label(size: 10, mono: true, color: .tertiaryLabelColor)
     private let cpuLoadInfo = PageUI.label(size: 10, mono: true, color: .tertiaryLabelColor)
     private let ramInfo = PageUI.label(size: 10, mono: true, color: .tertiaryLabelColor)
@@ -32,16 +32,18 @@ final class SystemPage: FlippedView {
     // 温度卡
     private let cpuTempSpark = SparklineView()
     private let gpuTempSpark = SparklineView()
-    private let cpuTempValue = PageUI.label(size: 13, weight: .semibold, mono: true)
-    private let gpuTempValue = PageUI.label(size: 13, weight: .semibold, mono: true)
+    private let cpuTempValue = PageUI.label(size: PageUI.rowValueSize, weight: .semibold, mono: true)
+    private let gpuTempValue = PageUI.label(size: PageUI.rowValueSize, weight: .semibold, mono: true)
     private let diskTempValue = PageUI.label(size: 12, weight: .semibold, mono: true)
     private let batteryTempValue = PageUI.label(size: 12, weight: .semibold, mono: true)
+    private let memoryTempValue = PageUI.label(size: 12, weight: .semibold, mono: true)
+    private let socTempValue = PageUI.label(size: 12, weight: .semibold, mono: true)
 
     // 磁盘卡
     private let readSpark = SparklineView()
     private let writeSpark = SparklineView()
-    private let readValue = PageUI.label(size: 12.5, weight: .semibold)
-    private let writeValue = PageUI.label(size: 12.5, weight: .semibold)
+    private let readValue = PageUI.label(size: PageUI.rowValueSize, weight: .semibold, mono: true)
+    private let writeValue = PageUI.label(size: PageUI.rowValueSize, weight: .semibold, mono: true)
     private let readTotalLabel = PageUI.label(size: 10, mono: true, color: .tertiaryLabelColor)
     private let writeTotalLabel = PageUI.label(size: 10, mono: true, color: .tertiaryLabelColor)
 
@@ -111,7 +113,7 @@ final class SystemPage: FlippedView {
     /// 指标行：标签 | sparkline | 数值；返回行底
     @discardableResult
     private func addMetricRow(_ title: String, spark: SparklineView, sparkHeight: CGFloat,
-                              value: NSTextField, valueWidth: CGFloat, y: CGFloat,
+                              value: NSTextField, y: CGFloat,
                               rowHeight: CGFloat, in card: CardView) -> CGFloat {
         let name = PageUI.label(title, size: 12, weight: .semibold)
         name.frame = NSRect(x: PageUI.cardPadding, y: y + (rowHeight - 15) / 2,
@@ -119,14 +121,14 @@ final class SystemPage: FlippedView {
         card.addSubview(name)
 
         let sparkX = PageUI.cardPadding + PageUI.rowLabelWidth + PageUI.rowGap
-        let sparkWidth = PageUI.innerWidth - PageUI.rowLabelWidth - valueWidth - PageUI.rowGap * 2
+        let sparkWidth = PageUI.innerWidth - PageUI.rowLabelWidth - PageUI.rowValueWidth - PageUI.rowGap * 2
         spark.frame = NSRect(x: sparkX, y: y + (rowHeight - sparkHeight) / 2,
                              width: sparkWidth, height: sparkHeight)
         card.addSubview(spark)
 
         value.alignment = .right
         value.frame = NSRect(x: sparkX + sparkWidth + PageUI.rowGap, y: y + (rowHeight - 17) / 2,
-                             width: valueWidth, height: 17)
+                             width: PageUI.rowValueWidth, height: 17)
         card.addSubview(value)
         return y + rowHeight
     }
@@ -139,7 +141,8 @@ final class SystemPage: FlippedView {
         for spark in [cpuSpark, gpuSpark, ramSpark] { spark.scaleFormat = .percent }
 
         y = addMetricRow("CPU", spark: cpuSpark, sparkHeight: 24, value: cpuValue,
-                         valueWidth: 52, y: y, rowHeight: 24, in: card)
+                         y: y, rowHeight: 24, in: card)
+        cpuCoresInfo.alignment = .right
         cpuCoresInfo.frame = NSRect(x: subIndent, y: y + 3, width: 110, height: 13)
         cpuLoadInfo.alignment = .right
         cpuLoadInfo.frame = NSRect(x: subIndent + 110,
@@ -151,13 +154,14 @@ final class SystemPage: FlippedView {
         y += 8
 
         y = addMetricRow("GPU", spark: gpuSpark, sparkHeight: 24, value: gpuValue,
-                         valueWidth: 52, y: y, rowHeight: 24, in: card)
+                         y: y, rowHeight: 24, in: card)
         y += 7
         PageUI.separator(in: card, y: y)
         y += 8
 
         y = addMetricRow("RAM", spark: ramSpark, sparkHeight: 24, value: ramValue,
-                         valueWidth: 52, y: y, rowHeight: 24, in: card)
+                         y: y, rowHeight: 24, in: card)
+        ramInfo.alignment = .right
         ramInfo.frame = NSRect(x: subIndent, y: y + 3,
                                width: PageUI.pageWidth - PageUI.cardPadding - subIndent, height: 13)
         card.addSubview(ramInfo)
@@ -176,23 +180,27 @@ final class SystemPage: FlippedView {
         gpuTempSpark.scaleFormat = .celsius
 
         y = addMetricRow("CPU", spark: cpuTempSpark, sparkHeight: 20, value: cpuTempValue,
-                         valueWidth: 52, y: y, rowHeight: 20, in: card)
+                         y: y, rowHeight: 20, in: card)
         y += 6
         PageUI.separator(in: card, y: y)
         y += 7
         y = addMetricRow("GPU", spark: gpuTempSpark, sparkHeight: 20, value: gpuTempValue,
-                         valueWidth: 52, y: y, rowHeight: 20, in: card)
+                         y: y, rowHeight: 20, in: card)
         y += 6
         PageUI.separator(in: card, y: y)
         y += 7
 
-        // 峰值已画进 sparkline，底部只留磁盘与电池两格
-        let cellWidth = PageUI.innerWidth / 2
-        for (index, (title, value)) in [("磁盘", diskTempValue), ("电池平均", batteryTempValue)].enumerated() {
+        // 峰值已画进 sparkline，底部展示四类可独立读取的辅助温度
+        let cellWidth = PageUI.innerWidth / 4
+        let cells = [("磁盘", diskTempValue), ("电池平均", batteryTempValue),
+                     ("内存", memoryTempValue), ("SoC 平均", socTempValue)]
+        for (index, (title, value)) in cells.enumerated() {
             let x = PageUI.cardPadding + cellWidth * CGFloat(index)
             let caption = PageUI.label(title, size: 9.5, color: .tertiaryLabelColor)
-            caption.frame = NSRect(x: x, y: y, width: cellWidth - 4, height: 12)
-            value.frame = NSRect(x: x, y: y + 13, width: cellWidth - 4, height: 15)
+            caption.alignment = .right
+            caption.frame = NSRect(x: x, y: y, width: cellWidth, height: 12)
+            value.alignment = .right
+            value.frame = NSRect(x: x, y: y + 13, width: cellWidth, height: 15)
             card.addSubview(caption)
             card.addSubview(value)
         }
@@ -211,16 +219,17 @@ final class SystemPage: FlippedView {
         writeSpark.scaleFormat = .rate
 
         y = addMetricRow("读取", spark: readSpark, sparkHeight: 20, value: readValue,
-                         valueWidth: 76, y: y, rowHeight: 20, in: card)
+                         y: y, rowHeight: 20, in: card)
         y += 6
         PageUI.separator(in: card, y: y)
         y += 7
         y = addMetricRow("写入", spark: writeSpark, sparkHeight: 20, value: writeValue,
-                         valueWidth: 76, y: y, rowHeight: 20, in: card)
+                         y: y, rowHeight: 20, in: card)
         y += 6
         PageUI.separator(in: card, y: y)
         y += 7
 
+        readTotalLabel.alignment = .right
         readTotalLabel.frame = NSRect(x: PageUI.cardPadding, y: y, width: PageUI.innerWidth / 2, height: 13)
         writeTotalLabel.alignment = .right
         writeTotalLabel.frame = NSRect(x: PageUI.cardPadding + PageUI.innerWidth / 2, y: y,
@@ -322,8 +331,10 @@ final class SystemPage: FlippedView {
         }, range: range, meanColor: StatsPalette.gpuSoft, peakColor: StatsPalette.gpuFaint)
         applyTemp(cpuTempValue, last.cpuTemp)
         applyTemp(gpuTempValue, last.gpuTemp)
-        diskTempValue.stringValue = tempText(last.diskTemp)
-        batteryTempValue.stringValue = tempText(last.batteryTemp)
+        applyTemp(diskTempValue, last.diskTemp)
+        applyTemp(batteryTempValue, last.batteryTemp)
+        applyTemp(memoryTempValue, last.memoryTemp)
+        applyTemp(socTempValue, last.socTemp)
     }
 
     private func updateDiskCard(_ last: StatsSample) {
@@ -332,9 +343,9 @@ final class SystemPage: FlippedView {
         writeSpark.update([.init(values: mean(.disk, \.diskWrite),
                                  color: StatsPalette.neutralSecondary, lineWidth: 1.4)])
         readValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.diskRead), unit: "MB/s",
-                                                               numberSize: 12.5, unitSize: 10)
+                                                               numberSize: PageUI.rowValueSize, unitSize: 10)
         writeValue.attributedStringValue = PageUI.valueWithUnit(StatsFormat.mbps(last.diskWrite), unit: "MB/s",
-                                                                numberSize: 12.5, unitSize: 10)
+                                                                numberSize: PageUI.rowValueSize, unitSize: 10)
         readTotalLabel.stringValue = "累计读取 \(StatsFormat.dataVolume(last.diskReadTotal))"
         writeTotalLabel.stringValue = "累计写入 \(StatsFormat.dataVolume(last.diskWriteTotal))"
     }

@@ -24,6 +24,8 @@ final class StatsMonitor {
     private var gpuTempKeys: [String]?
     private var diskTempKeys: [String]?
     private var batteryTempKeys: [String]?
+    private var memoryTempKeys: [String]?
+    private var socTempKeys: [String]?
 
     /// 主线程访问：最近的采样历史（含最新一条）
     private(set) var history: [StatsSample] = []
@@ -103,7 +105,7 @@ final class StatsMonitor {
         (sample.netUp, sample.netDown) = network.sample()
 
         // 温度：CPU 走 SMC（M5 键为 Tp**）；GPU 优先取 IOAccelerator 自带值，缺失时走 SMC Tg**；
-        // 硬盘（NAND TH**）与电池（TB*T）用于弹窗温度卡和 RAM 柱边框
+        // 硬盘、电池、统一内存与 SoC 封装用于弹窗温度卡；硬盘温度同时驱动 RAM 柱边框
         setupSMCIfNeeded()
         if let smc {
             let cpuTemps = smc.temperatures(cpuTempKeys ?? [])
@@ -121,6 +123,8 @@ final class StatsMonitor {
             }
             sample.diskTemp = smc.averageTemperature(diskTempKeys ?? [])
             sample.batteryTemp = smc.averageTemperature(batteryTempKeys ?? [])
+            sample.memoryTemp = smc.averageTemperature(memoryTempKeys ?? [])
+            sample.socTemp = smc.averageTemperature(socTempKeys ?? [])
         } else if let temp = gpuResult.temp {
             sample.gpuTemp = temp
             sample.gpuTempMax = temp
@@ -147,6 +151,8 @@ final class StatsMonitor {
             gpuTempKeys = []
             diskTempKeys = []
             batteryTempKeys = []
+            memoryTempKeys = []
+            socTempKeys = []
             NSLog("MyOwnTools: SMC 连接失败，温度显示不可用")
             return
         }
@@ -156,10 +162,13 @@ final class StatsMonitor {
         gpuTempKeys = keys.gpu
         diskTempKeys = keys.disk
         batteryTempKeys = keys.battery
+        memoryTempKeys = keys.memory
+        socTempKeys = keys.soc
         // 核心温度(CPU/GPU)驱动菜单栏边框分级,枚举不到才记一条便于排查机型差异,正常启动静默
         if keys.cpu.isEmpty || keys.gpu.isEmpty {
-            NSLog("MyOwnTools: SMC 温度键发现异常 CPU=%d GPU=%d 硬盘=%d 电池=%d",
-                  keys.cpu.count, keys.gpu.count, keys.disk.count, keys.battery.count)
+            NSLog("MyOwnTools: SMC 温度键发现异常 CPU=%d GPU=%d 硬盘=%d 电池=%d 内存=%d SoC=%d",
+                  keys.cpu.count, keys.gpu.count, keys.disk.count, keys.battery.count,
+                  keys.memory.count, keys.soc.count)
         }
     }
 }

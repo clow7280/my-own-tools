@@ -27,6 +27,8 @@ struct StatsSample {
     var diskWriteTotal: Double = 0
     var diskTemp: Double?           // ℃，SMC 硬盘（NAND）传感器
     var batteryTemp: Double?        // ℃，SMC 电池传感器平均
+    var memoryTemp: Double?         // ℃，SMC 统一内存传感器平均
+    var socTemp: Double?            // ℃，SMC SoC 封装传感器平均
     var netUp: Double = 0           // 字节/秒
     var netDown: Double = 0
 }

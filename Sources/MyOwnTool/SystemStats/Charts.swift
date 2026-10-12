@@ -104,11 +104,14 @@ final class SparklineView: NSView {
     }
 
     /// 绘图区右侧的最值刻度：上缘最大值、下缘最小值，与曲线填满的上下边一一对应。
-    /// 两行左对齐贴着曲线，四张卡一致。
+    /// 两行右对齐于刻度列尾端，四张卡一致。
     private func drawScale(low: Double, high: Double, in plot: NSRect) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .right
         let attributes: [NSAttributedString.Key: Any] = [
             .font: Self.scaleFont,
             .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
         ]
         let x = plot.maxX + Self.scaleGap
         let width = Swift.max(bounds.maxX - 1 - x, 0)
