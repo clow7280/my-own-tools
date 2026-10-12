@@ -21,6 +21,7 @@ private enum StatsCoreChecks {
             try self.checkLayoutEditRoundTrip()
             try self.checkLayoutAddRemoveDividers()
             try self.checkLayoutFocusRect()
+            try self.checkLayoutRectangularSelection()
             try self.checkLayoutZoneRects()
             print("StatsCoreChecks: all checks passed")
         } catch {
@@ -644,46 +645,95 @@ private enum StatsCoreChecks {
     }
 
     private static func checkLayoutFocusRect() throws {
-        let area = CGRect(x: -300, y: 100, width: 1200, height: 800)
         try self.expect(
-            LayoutGeometry.focusRect(windowSize: CGSize(width: 600, height: 400), in: area)
-                == CGRect(x: 0, y: 300, width: 600, height: 400),
-            "专注布局保留原尺寸并在非零原点可用区域内居中")
-        try self.expect(
-            LayoutGeometry.focusRect(windowSize: CGSize(width: 1800, height: 900), in: area) == area,
-            "专注布局先把超大窗口夹到可用区域")
-        try self.expect(
-            LayoutGeometry.focusRect(windowSize: CGSize(width: -20, height: 200), in: area)
-                == CGRect(x: 300, y: 400, width: 0, height: 200),
-            "专注布局不产生负尺寸")
+            LayoutGeometry.focusWidthRatio == 2.0 / 3.0
+                && LayoutGeometry.focusHeightRatio == 2.0 / 3.0,
+            "专注布局宽高比例固定为可用区域的 2/3")
 
-        let fullScreenFrame = CGRect(x: 0, y: 0, width: 1200, height: 800)
-        let savedSize = CGSize(width: 640, height: 480)
+        let area = CGRect(x: -300, y: 100, width: 1200, height: 900)
         try self.expect(
-            LayoutGeometry.restoredFocusSize(
-                currentFrame: fullScreenFrame,
-                appliedFullScreenFrame: fullScreenFrame,
-                savedSize: savedSize) == savedSize,
-            "窗口仍处于已应用的全屏框时恢复全屏前尺寸")
+            LayoutGeometry.focusRect(in: area)
+                == CGRect(x: -100, y: 250, width: 800, height: 600),
+            "专注布局在非零原点可用区域内按固定比例居中")
+
+        // 1512 × 945 是常见的 MacBook 缩放后逻辑尺寸，结果只由目标显示器决定。
+        let macBookArea = CGRect(x: 0, y: 0, width: 1512, height: 945)
         try self.expect(
-            LayoutGeometry.restoredFocusSize(
-                currentFrame: fullScreenFrame.offsetBy(dx: 3, dy: -2),
-                appliedFullScreenFrame: fullScreenFrame,
-                savedSize: savedSize) == savedSize,
-            "应用自身产生容差内偏差时仍恢复全屏前尺寸")
+            LayoutGeometry.focusRect(in: macBookArea)
+                == CGRect(x: 252, y: 157.5, width: 1008, height: 630),
+            "MacBook 逻辑可用区域得到稳定的 1008 × 630 pt 专注窗口")
+    }
+
+    /// Option 经过多个分区时，窗口目标必须仍是由现有分区完整铺成的单个矩形。
+    private static func checkLayoutRectangularSelection() throws {
+        let area = CGRect(x: -120, y: 80, width: 1200, height: 900)
+        let external = try self.defaultLayoutConfig().external
+        let rects = LayoutGeometry.rects(for: external, in: area)
+
+        let repeated = LayoutGeometry.rectangularSelection(in: rects, including: [2, 2])
         try self.expect(
-            LayoutGeometry.restoredFocusSize(
-                currentFrame: CGRect(x: 0, y: 0, width: 1000, height: 800),
-                appliedFullScreenFrame: fullScreenFrame,
-                savedSize: savedSize) == nil,
-            "窗口被手动缩放后不恢复过期尺寸")
+            repeated == RectangularZoneSelection(indices: [2], rect: rects[2]),
+            "重复经过同一分区不改变单分区目标")
+
+        // 主区与底左构成 L 形；最小外包矩形内的底中会自动补入，得到完整的左侧 2/3。
+        let left = LayoutGeometry.rectangularSelection(in: rects, including: [0, 2])
+        try self.expect(left?.indices == [0, 2, 3], "L 形路径补齐外包矩形内的必要分区")
+        let expectedLeft = CGRect(x: area.minX, y: area.minY,
+                                  width: area.width * 0.6667, height: area.height)
+        let leftOffsets = left.map {
+            [abs($0.rect.minX - expectedLeft.minX), abs($0.rect.minY - expectedLeft.minY),
+             abs($0.rect.maxX - expectedLeft.maxX), abs($0.rect.maxY - expectedLeft.maxY)]
+        } ?? [.infinity]
         try self.expect(
-            LayoutGeometry.restoredFocusSize(
-                currentFrame: fullScreenFrame,
-                appliedFullScreenFrame: fullScreenFrame,
-                savedSize: savedSize,
-                tolerance: -.infinity) == nil,
-            "非法容差不能命中旧的全屏状态")
+            leftOffsets.allSatisfy { $0 <= 1e-6 },
+            "补齐后目标为全高左侧 2/3")
+
+        let whole = LayoutGeometry.rectangularSelection(in: rects, including: [0, 4])
+        try self.expect(whole?.indices == Array(rects.indices), "跨对角经过时补齐整屏五个分区")
+        let wholeOffsets = whole.map {
+            [abs($0.rect.minX - area.minX), abs($0.rect.minY - area.minY),
+             abs($0.rect.maxX - area.maxX), abs($0.rect.maxY - area.maxY)]
+        } ?? [.infinity]
+        try self.expect(
+            wholeOffsets.allSatisfy { $0 <= 1e-6 },
+            "五个分区完整铺满可用区域")
+
+        let gapped = [
+            CGRect(x: 0, y: 0, width: 49, height: 100),
+            CGRect(x: 51, y: 0, width: 49, height: 100),
+        ]
+        try self.expect(
+            LayoutGeometry.rectangularSelection(in: gapped, including: [0, 1]) == nil,
+            "有空洞的分区不能组合成窗口矩形")
+
+        let overlapping = [
+            CGRect(x: 0, y: 0, width: 60, height: 100),
+            CGRect(x: 40, y: 0, width: 60, height: 100),
+        ]
+        try self.expect(
+            LayoutGeometry.rectangularSelection(in: overlapping, including: [0, 1]) == nil,
+            "互相重叠的分区不能组合成窗口矩形")
+
+        let crossing = [
+            CGRect(x: 0, y: 0, width: 50, height: 100),
+            CGRect(x: 40, y: 0, width: 20, height: 100),
+        ]
+        try self.expect(
+            LayoutGeometry.rectangularSelection(in: crossing, including: [0]) == nil,
+            "未选分区切进目标内部时拒绝有歧义的组合")
+        try self.expect(
+            LayoutGeometry.rectangularSelection(in: rects, including: [-1]) == nil
+                && LayoutGeometry.rectangularSelection(in: rects, including: [rects.count]) == nil,
+            "越界分区索引不能产生目标")
+
+        let nearSeam = [
+            CGRect(x: 0, y: 0, width: 50, height: 100),
+            CGRect(x: 50.0000005, y: 0, width: 49.9999995, height: 100),
+        ]
+        try self.expect(
+            LayoutGeometry.rectangularSelection(in: nearSeam, including: [0, 1])?.rect
+                == CGRect(x: 0, y: 0, width: 100, height: 100),
+            "浮点容差内的接缝仍视作连续")
     }
 
     /// 比例到矩形的换算，重点是纵向翻转：配置的 y 原点在左上，Cocoa 在左下。

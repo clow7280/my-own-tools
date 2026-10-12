@@ -2,7 +2,7 @@ import AppKit
 import StatsCore
 
 enum SnapTargetKind: Equatable {
-    case zone(Int)
+    case zones([Int])
     case fullScreen
     case focus
 }
@@ -19,7 +19,7 @@ final class OverlayManager {
 
     var isVisible: Bool { !overlays.isEmpty }
 
-    func show(focusSize: CGSize) {
+    func show() {
         guard overlays.isEmpty else { return }
         for screen in NSScreen.screens {
             let rects = LayoutProvider.zoneRects(for: screen)
@@ -36,7 +36,7 @@ final class OverlayManager {
 
             let localRects = rects.map { $0.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY) }
             let special = Self.specialTargetRects(in: screen.visibleFrame)
-            let focusRect = LayoutGeometry.focusRect(windowSize: focusSize, in: screen.visibleFrame)
+            let focusRect = LayoutGeometry.focusRect(in: screen.visibleFrame)
             let view = OverlayView(
                 zoneRects: localRects,
                 fullScreenRect: screen.visibleFrame.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY),
@@ -54,7 +54,8 @@ final class OverlayManager {
         overlays.removeAll()
     }
 
-    func target(at point: CGPoint) -> SnapTarget? {
+    /// Option 按住时用 extending 传入上一帧的多分区目标，新经过的分区会扩成连续矩形。
+    func target(at point: CGPoint, extending previous: SnapTarget? = nil) -> SnapTarget? {
         guard let overlay = overlays.first(where: { NSMouseInRect(point, $0.screen.frame, false) }) else {
             return nil
         }
@@ -67,11 +68,21 @@ final class OverlayManager {
             return SnapTarget(
                 screen: screen,
                 kind: .focus,
-                rect: LayoutGeometry.focusRect(windowSize: overlay.view.focusSize, in: screen.visibleFrame))
+                rect: LayoutGeometry.focusRect(in: screen.visibleFrame))
         }
         let rects = LayoutProvider.zoneRects(for: screen)
         guard let index = rects.firstIndex(where: { $0.contains(point) }) else { return nil }
-        return SnapTarget(screen: screen, kind: .zone(index), rect: rects[index])
+        let single = SnapTarget(screen: screen, kind: .zones([index]), rect: rects[index])
+        guard let previous, previous.screen == screen,
+              case .zones(let previousIndices) = previous.kind else { return single }
+        if previousIndices.contains(index) { return previous }
+
+        guard let selection = LayoutGeometry.rectangularSelection(
+            in: rects, including: previousIndices + [index]) else {
+            // 自定义布局有空洞或重叠时不产生模糊目标，从当前分区重新累计。
+            return single
+        }
+        return SnapTarget(screen: screen, kind: .zones(selection.indices), rect: selection.rect)
     }
 
     func highlight(_ target: SnapTarget?) {
@@ -81,8 +92,8 @@ final class OverlayManager {
     }
 
     private static func specialTargetRects(in area: CGRect) -> (fullScreen: CGRect, focus: CGRect) {
-        let size = CGSize(width: 78, height: 28)
-        let gap: CGFloat = 8
+        let size = CGSize(width: 92, height: 34)
+        let gap: CGFloat = 10
         let totalWidth = size.width * 2 + gap
         let y = area.maxY - 12 - size.height
         let left = area.midX - totalWidth / 2
@@ -100,8 +111,6 @@ final class OverlayView: NSView {
     private let focusRect: CGRect
     private let fullScreenTargetRect: CGRect
     private let focusTargetRect: CGRect
-
-    var focusSize: CGSize { focusRect.size }
 
     var highlightedTarget: SnapTargetKind? {
         didSet { if highlightedTarget != oldValue { needsDisplay = true } }
@@ -127,10 +136,24 @@ final class OverlayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let accent = NSColor.controlAccentColor
+        let highlightedZones: [Int]
+        if case .zones(let indices) = highlightedTarget {
+            highlightedZones = indices
+        } else {
+            highlightedZones = []
+        }
+
+        if highlightedZones.count > 1, let first = highlightedZones.first {
+            let combined = highlightedZones.dropFirst().reduce(zoneRects[first]) {
+                $0.union(zoneRects[$1])
+            }
+            drawPreview(combined, accent: accent)
+        }
+
         for (index, zone) in zoneRects.enumerated() {
             let rect = zone.insetBy(dx: 6, dy: 6)
             let path = NSBezierPath(roundedRect: rect, xRadius: 12, yRadius: 12)
-            let hovered = highlightedTarget == .zone(index)
+            let hovered = highlightedZones.contains(index)
             accent.withAlphaComponent(hovered ? 0.32 : 0.10).setFill()
             path.fill()
             accent.withAlphaComponent(hovered ? 0.90 : 0.35).setStroke()
@@ -143,7 +166,7 @@ final class OverlayView: NSView {
             drawPreview(fullScreenRect, accent: accent)
         case .focus:
             drawPreview(focusRect, accent: accent)
-        default:
+        case .zones, nil:
             break
         }
         drawSpecialTarget(fullScreenTargetRect, title: "全屏", active: highlightedTarget == .fullScreen)

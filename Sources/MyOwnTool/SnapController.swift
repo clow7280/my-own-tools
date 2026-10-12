@@ -1,14 +1,14 @@
 import AppKit
 import StatsCore
 
-/// 监听 Shift 窗口手势：按住 Shift 拖动时显示配置分区以及「全屏 / 专注」目标，
-/// 松手后把窗口吸附到当前目标。
+/// 监听 Shift 窗口手势：按住 Shift 拖动时显示配置分区以及「全屏 / 专注」目标；
+/// 同时按住 Option 可把经过的连续分区组合成一个矩形目标，松手后吸附到当前目标。
 /// 长按进入分割线编辑的手势在 LayoutEditController，优先级与让位规则见那里。
 ///
-/// 修饰键选 Shift 而非 Option：Option-点按另一 App 的窗口会触发系统的
+/// 主修饰键选 Shift 而非 Option：Option-点按另一 App 的窗口会触发系统的
 /// 「隐藏当前 App」行为，规避它需要能改写事件流的 CGEventTap，而主动式 tap
 /// 会给全局鼠标事件增加一跳延迟；Shift 没有窗口级的系统互动，
-/// 用只读的 NSEvent 全局监视器即可，不影响系统事件投递。
+/// 这里仍只用只读的 NSEvent 全局监视器，Option 仅在 Shift 拖动已成立后扩展目标。
 final class SnapController {
     private var eventMonitor: Any?
     private let overlay = OverlayManager()
@@ -45,22 +45,11 @@ final class SnapController {
     private struct DragSession {
         let window: AXWindow
         let initialFrame: CGRect      // AX 坐标
-        let focusSize: CGSize
         var confirmedMoving = false
         var target: SnapTarget?
+        var extendedTarget: SnapTarget?
     }
     private var session: DragSession?
-
-    /// 仅记录由本工具应用过的全屏状态，用来让下一次专注恢复全屏前尺寸。
-    /// AX 元素没有适合作为 Dictionary key 的稳定公开标识，因此保留一个有上限的小数组，
-    /// 通过 CFEqual 匹配同一窗口；关闭窗口留下的失效元素也不会无限累积。
-    private struct FullScreenRecord {
-        let window: AXWindow
-        let focusSize: CGSize
-        let appliedFrame: CGRect      // AX 坐标，考虑目标 App 自身的尺寸夹取
-    }
-    private var fullScreenRecords: [FullScreenRecord] = []
-    private static let fullScreenRecordLimit = 32
 
     func start() {
         guard eventMonitor == nil else { return }
@@ -73,6 +62,7 @@ final class SnapController {
     private func handle(_ event: NSEvent) {
         guard isEnabled, !isSuspended else { return }
         let shiftHeld = event.modifierFlags.contains(.shift)
+        let optionHeld = event.modifierFlags.contains(.option)
 
         switch event.type {
         case .leftMouseDown:
@@ -85,12 +75,17 @@ final class SnapController {
                 return
             }
             if session == nil { beginSession() }
-            updateSession()
+            updateSession(optionHeld: optionHeld)
         case .leftMouseUp:
             finish(commit: shiftHeld)
         case .flagsChanged:
             // 拖动过程中松开 Shift 即取消，可再次按下恢复
-            if !shiftHeld, overlay.isVisible { pauseOverlay() }
+            if !shiftHeld {
+                if overlay.isVisible { pauseOverlay() }
+            } else if session?.confirmedMoving == true {
+                // 鼠标不动时按下或松开 Option，也要立即切换多分区与单分区预览。
+                updateSession(optionHeld: optionHeld)
+            }
         default:
             break
         }
@@ -100,13 +95,10 @@ final class SnapController {
     private func beginSession() {
         let axPoint = Coords.cocoaToAX(NSEvent.mouseLocation)
         guard let window = AXWindow.window(atAX: axPoint), let frame = window.frame else { return }
-        session = DragSession(
-            window: window,
-            initialFrame: frame,
-            focusSize: resolvedFocusSize(for: window, currentFrame: frame))
+        session = DragSession(window: window, initialFrame: frame)
     }
 
-    private func updateSession() {
+    private func updateSession(optionHeld: Bool) {
         guard var current = session else { return }
 
         // 窗口位置真的变化才认定为「正在拖动窗口」，避免误伤窗口内部的 Shift 操作（如扩展选区）
@@ -123,10 +115,17 @@ final class SnapController {
             current.confirmedMoving = true
         }
 
-        if !overlay.isVisible { overlay.show(focusSize: current.focusSize) }
+        if !overlay.isVisible { overlay.show() }
 
         let mouse = NSEvent.mouseLocation
-        current.target = overlay.target(at: mouse)
+        let target = overlay.target(at: mouse, extending: optionHeld ? current.extendedTarget : nil)
+        if optionHeld, let target, case .zones = target.kind {
+            current.extendedTarget = target
+        } else {
+            // 松开 Option、跨屏、经过空洞或命中特殊目标都会结束本轮累计。
+            current.extendedTarget = nil
+        }
+        current.target = target
         overlay.highlight(current.target)
         session = current
     }
@@ -138,64 +137,17 @@ final class SnapController {
         guard commit, let ended, ended.confirmedMoving, let target = ended.target else { return }
         let appliedFrame = Coords.cocoaToAX(target.rect)
         ended.window.setFrame(appliedFrame)
-        switch target.kind {
-        case .fullScreen:
-            rememberFullScreen(
-                for: ended.window,
-                focusSize: ended.focusSize,
-                appliedFrame: ended.window.frame ?? appliedFrame)
-        case .zone(_), .focus:
-            forgetFullScreen(for: ended.window)
-        }
     }
 
     /// Shift 松开：隐藏标记并清空吸附目标，但保留会话，重新按下 Shift 可继续
     private func pauseOverlay() {
         overlay.hide()
         session?.target = nil
+        session?.extendedTarget = nil
     }
 
     private func cancel() {
         overlay.hide()
         session = nil
-    }
-
-    private func resolvedFocusSize(for window: AXWindow, currentFrame: CGRect) -> CGSize {
-        guard let index = fullScreenRecords.lastIndex(where: {
-            CFEqual($0.window.element, window.element)
-        }) else { return currentFrame.size }
-
-        let record = fullScreenRecords[index]
-        guard let restored = LayoutGeometry.restoredFocusSize(
-            currentFrame: currentFrame,
-            appliedFullScreenFrame: record.appliedFrame,
-            savedSize: record.focusSize)
-        else {
-            // 窗口已被用户或其他布局改动，旧的全屏前尺寸不再代表当前意图。
-            fullScreenRecords.remove(at: index)
-            return currentFrame.size
-        }
-
-        // 命中记录移到末尾，使数组上限淘汰最久未使用的窗口。
-        if index != fullScreenRecords.index(before: fullScreenRecords.endIndex) {
-            fullScreenRecords.remove(at: index)
-            fullScreenRecords.append(record)
-        }
-        return restored
-    }
-
-    private func rememberFullScreen(for window: AXWindow, focusSize: CGSize, appliedFrame: CGRect) {
-        forgetFullScreen(for: window)
-        fullScreenRecords.append(FullScreenRecord(
-            window: window,
-            focusSize: focusSize,
-            appliedFrame: appliedFrame))
-        if fullScreenRecords.count > Self.fullScreenRecordLimit {
-            fullScreenRecords.removeFirst(fullScreenRecords.count - Self.fullScreenRecordLimit)
-        }
-    }
-
-    private func forgetFullScreen(for window: AXWindow) {
-        fullScreenRecords.removeAll { CFEqual($0.window.element, window.element) }
     }
 }

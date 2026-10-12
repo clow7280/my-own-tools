@@ -73,6 +73,17 @@ public enum LayoutAxis: Equatable {
     case horizontal
 }
 
+/// 多个配置分区共同组成的矩形目标。
+public struct RectangularZoneSelection: Equatable {
+    public let indices: [Int]
+    public let rect: CGRect
+
+    public init(indices: [Int], rect: CGRect) {
+        self.indices = indices
+        self.rect = rect
+    }
+}
+
 /// 分区的纯几何：数值合法性判定与比例到矩形的换算。
 /// 可用区域由调用方以矩形传入，这里不碰 NSScreen，无显示器环境也能校验。
 public enum LayoutGeometry {
@@ -110,39 +121,108 @@ public enum LayoutGeometry {
         specs.map { rect(for: $0, in: area) }
     }
 
-    /// 专注布局：保留窗口尺寸并放到可用区域中央，超出可用区域的尺寸先夹取。
-    public static func focusRect(windowSize: CGSize, in area: CGRect) -> CGRect {
-        let fitted = CGSize(
-            width: min(max(windowSize.width, 0), area.width),
-            height: min(max(windowSize.height, 0), area.height))
-        return CGRect(
-            x: area.midX - fitted.width / 2,
-            y: area.midY - fitted.height / 2,
-            width: fitted.width,
-            height: fitted.height)
+    /// 把经过的分区扩展成一个能由现有分区完整铺满的最小矩形。
+    ///
+    /// requiredIndices 是用户明确经过的分区；它们的外包矩形里若还有完整落入的分区，
+    /// 会作为填满矩形所必需的连续空间一并返回。空洞、面积重叠或只切进矩形一部分的分区
+    /// 都会令组合失败，避免把不可表达的 L 形目标直接套到矩形窗口上。
+    public static func rectangularSelection(
+        in rects: [CGRect],
+        including requiredIndices: [Int],
+        tolerance: CGFloat = 1e-6
+    ) -> RectangularZoneSelection? {
+        guard tolerance.isFinite, tolerance >= 0, !requiredIndices.isEmpty else { return nil }
+
+        var seen = Set<Int>()
+        let required = requiredIndices.filter { index in
+            rects.indices.contains(index) && seen.insert(index).inserted
+        }
+        guard required.count == Set(requiredIndices).count,
+              required.allSatisfy({ valid(rects[$0], tolerance: tolerance) }),
+              let first = required.first else { return nil }
+
+        let bounds = required.dropFirst().reduce(rects[first].standardized) {
+            $0.union(rects[$1].standardized)
+        }
+        let included = rects.indices.filter {
+            valid(rects[$0], tolerance: tolerance)
+                && contains(bounds, rect: rects[$0].standardized, tolerance: tolerance)
+        }
+
+        // 未被纳入的分区若切进目标内部，说明配置本身在这里有重叠，不能把它当成连续矩形。
+        let includedSet = Set(included)
+        for index in rects.indices where !includedSet.contains(index) {
+            let rect = rects[index].standardized
+            guard valid(rect, tolerance: tolerance) else { continue }
+            let overlap = bounds.intersection(rect)
+            if !overlap.isNull && overlap.width > tolerance && overlap.height > tolerance {
+                return nil
+            }
+        }
+
+        guard rectangularUnion(rects: included.map { rects[$0].standardized },
+                               bounds: bounds, tolerance: tolerance) else { return nil }
+        return RectangularZoneSelection(indices: included, rect: bounds)
     }
 
-    /// 窗口仍停在本工具上次应用的全屏框时，返回进入全屏前保存的专注尺寸。
-    ///
-    /// 少量误差用于兼容应用自身的尺寸夹取；一旦用户移动或缩放超过容差，
-    /// 旧尺寸立即失效，后续专注应改用窗口新的当前尺寸。
-    public static func restoredFocusSize(
-        currentFrame: CGRect,
-        appliedFullScreenFrame: CGRect,
-        savedSize: CGSize,
-        tolerance: CGFloat = 4
-    ) -> CGSize? {
-        guard tolerance.isFinite, tolerance >= 0,
-              savedSize.width.isFinite, savedSize.height.isFinite,
-              savedSize.width >= 0, savedSize.height >= 0 else { return nil }
-        let offsets = [
-            abs(currentFrame.minX - appliedFullScreenFrame.minX),
-            abs(currentFrame.minY - appliedFullScreenFrame.minY),
-            abs(currentFrame.width - appliedFullScreenFrame.width),
-            abs(currentFrame.height - appliedFullScreenFrame.height),
-        ]
-        guard offsets.allSatisfy({ $0.isFinite && $0 <= tolerance }) else { return nil }
-        return savedSize
+    /// 专注布局固定占目标显示器可用区域的 2/3，避免尺寸继承自拖动前所在的分区。
+    public static let focusWidthRatio: CGFloat = 2.0 / 3.0
+    public static let focusHeightRatio: CGFloat = 2.0 / 3.0
+
+    public static func focusRect(in area: CGRect) -> CGRect {
+        let size = CGSize(
+            width: max(area.width, 0) * focusWidthRatio,
+            height: max(area.height, 0) * focusHeightRatio)
+        return CGRect(
+            x: area.midX - size.width / 2,
+            y: area.midY - size.height / 2,
+            width: size.width,
+            height: size.height)
+    }
+
+    private static func valid(_ rect: CGRect, tolerance: CGFloat) -> Bool {
+        rect.origin.x.isFinite && rect.origin.y.isFinite
+            && rect.width.isFinite && rect.height.isFinite
+            && rect.width > tolerance && rect.height > tolerance
+    }
+
+    private static func contains(_ outer: CGRect, rect inner: CGRect, tolerance: CGFloat) -> Bool {
+        inner.minX >= outer.minX - tolerance && inner.maxX <= outer.maxX + tolerance
+            && inner.minY >= outer.minY - tolerance && inner.maxY <= outer.maxY + tolerance
+    }
+
+    /// 以所有矩形边界切成小格，每格必须恰好被一个分区覆盖。
+    /// 单看面积相等无法排除「一处重叠、另一处空洞」刚好抵消的情况。
+    private static func rectangularUnion(rects: [CGRect], bounds: CGRect, tolerance: CGFloat) -> Bool {
+        guard !rects.isEmpty, valid(bounds, tolerance: tolerance) else { return false }
+
+        func clustered(_ values: [CGFloat]) -> [CGFloat] {
+            values.sorted().reduce(into: []) { result, value in
+                guard let last = result.last, abs(last - value) <= tolerance else {
+                    result.append(value)
+                    return
+                }
+            }
+        }
+
+        let xs = clustered([bounds.minX, bounds.maxX] + rects.flatMap { [$0.minX, $0.maxX] })
+        let ys = clustered([bounds.minY, bounds.maxY] + rects.flatMap { [$0.minY, $0.maxY] })
+        guard xs.count >= 2, ys.count >= 2 else { return false }
+
+        for xIndex in 0..<(xs.count - 1) where xs[xIndex + 1] - xs[xIndex] > tolerance {
+            let x = (xs[xIndex] + xs[xIndex + 1]) / 2
+            for yIndex in 0..<(ys.count - 1) where ys[yIndex + 1] - ys[yIndex] > tolerance {
+                let y = (ys[yIndex] + ys[yIndex + 1]) / 2
+                let covering = rects.reduce(into: 0) { count, rect in
+                    if x >= rect.minX - tolerance, x <= rect.maxX + tolerance,
+                       y >= rect.minY - tolerance, y <= rect.maxY + tolerance {
+                        count += 1
+                    }
+                }
+                if covering != 1 { return false }
+            }
+        }
+        return true
     }
 
     /// 在指定分区内增加一条分割线。

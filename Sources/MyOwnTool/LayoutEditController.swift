@@ -1,7 +1,7 @@
 import AppKit
 import StatsCore
 
-/// 长按 Shift 1 秒（期间无按键与鼠标操作）进入分割线编辑模式：
+/// 长按 Shift 1.2 秒（期间无按键与鼠标操作）进入分割线编辑模式：
 /// 每条分割线上覆盖一个本应用的细条手柄窗口，拖动手柄即按比例调整两侧分区；
 /// 右键分区可增加横向或纵向分割，右键分割线删除指针所在的线段；
 /// 松开 Shift 保存到布局配置，按 Esc 放弃本次修改。
@@ -13,7 +13,7 @@ import StatsCore
 /// 1. 鼠标一旦参与就归 SnapController：任何鼠标按下、拖动或滚轮都会取消长按计时，
 ///    所以 Shift 拖窗口期间不会顺带进编辑模式；
 ///    计时器到点时还会复查「只按住 Shift 且无鼠标键」，挡住计时窗口内漏掉的边界情况。
-/// 2. 长按满 1 秒进入编辑模式后编辑优先，本控制器通过 onEditingChanged 挂起 SnapController，
+/// 2. 长按满 1.2 秒进入编辑模式后编辑优先，本控制器通过 onEditingChanged 挂起 SnapController，
 ///    此时的 Shift 拖拽不再吸附窗口，退出编辑模式后自动恢复。
 /// 3. 计时只在 flagsChanged 报告「修饰键恰好只剩 Shift」时重新开始，
 ///    因此一次 Shift 拖拽结束后即便手指还按着 Shift 也不会补进编辑模式，
@@ -99,7 +99,7 @@ final class LayoutEditController {
 
     private func startTimer() {
         cancelTimer()
-        longPressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
+        longPressTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.longPressTimer = nil
             // 触发时再确认仍是「只按住 Shift 且无鼠标按键」
@@ -550,6 +550,7 @@ final class EditOverlayView: NSView {
             accent.withAlphaComponent(index == activeIndex ? 1.0 : 0.6).setFill()
             path.fill()
         }
+        for zone in zoneRects { drawZoneSize(zone) }
         drawHint()
     }
 
@@ -582,6 +583,29 @@ final class EditOverlayView: NSView {
         guard let pendingSplit else { return }
         self.pendingSplit = nil
         onSplit?(pendingSplit.zoneIndex, axis, pendingSplit.mouse)
+    }
+
+    private func drawZoneSize(_ zone: CGRect) {
+        let width = Int(zone.width.rounded())
+        let height = Int(zone.height.rounded())
+        let text = "\(width) × \(height) pt"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        let padding = CGSize(width: 8, height: 4)
+        let badge = CGRect(
+            x: zone.midX - textSize.width / 2 - padding.width,
+            y: zone.midY - textSize.height / 2 - padding.height,
+            width: textSize.width + padding.width * 2,
+            height: textSize.height + padding.height * 2)
+        let path = NSBezierPath(roundedRect: badge, xRadius: 6, yRadius: 6)
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        path.fill()
+        text.draw(
+            at: CGPoint(x: badge.minX + padding.width, y: badge.minY + padding.height),
+            withAttributes: attributes)
     }
 
     private func drawHint() {
