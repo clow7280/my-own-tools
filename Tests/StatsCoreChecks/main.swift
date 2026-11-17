@@ -23,6 +23,7 @@ private enum StatsCoreChecks {
             try self.checkLayoutFocusRect()
             try self.checkLayoutRectangularSelection()
             try self.checkLayoutZoneRects()
+            try self.checkDockPlacement()
             print("StatsCoreChecks: all checks passed")
         } catch {
             fputs("StatsCoreChecks failed: \(error)\n", stderr)
@@ -797,6 +798,50 @@ private enum StatsCoreChecks {
         try self.expect(
             half == CGRect(x: -100, y: -300, width: 400, height: 450),
             "负原点区域上的右半屏，实际 \(half)")
+    }
+
+    /// Dock 所在屏幕的判定。左右两侧只看屏幕位置，底部只能看可用区域让位，
+    /// 看不出时沿用上次结果；这里钉住本机实际的「外接在右、内置在左」排布。
+    private static func checkDockPlacement() throws {
+        let external = CGRect(x: 0, y: 0, width: 2560, height: 1440)
+        let builtin = CGRect(x: -1470, y: 0, width: 1470, height: 956)
+        let frames = [external, builtin]
+        let noDock = [CGRect(x: 0, y: 0, width: 2560, height: 1410),
+                      CGRect(x: -1470, y: 0, width: 1470, height: 924)]
+
+        try self.expect(
+            DockPlacement.hostIndex(edge: .right, frames: frames, visibleFrames: noDock, lastHost: 1) == 0,
+            "Dock 在右侧时只会在最右边的屏幕上，与上次结果无关")
+        try self.expect(
+            DockPlacement.hostIndex(edge: .left, frames: frames, visibleFrames: noDock, lastHost: 0) == 1,
+            "Dock 在左侧时只会在最左边的屏幕上，与上次结果无关")
+
+        let bottomOnBuiltin = [noDock[0], CGRect(x: -1470, y: 60, width: 1470, height: 864)]
+        try self.expect(
+            DockPlacement.hostIndex(edge: .bottom, frames: frames, visibleFrames: bottomOnBuiltin, lastHost: 0) == 1,
+            "Dock 在底部时取底边让出空间的屏幕")
+        try self.expect(
+            DockPlacement.hostIndex(edge: .bottom, frames: frames, visibleFrames: noDock, lastHost: 1) == 1,
+            "底部 Dock 看不出让位时沿用上次判定的屏幕")
+        try self.expect(
+            DockPlacement.hostIndex(edge: .bottom, frames: frames, visibleFrames: noDock, lastHost: nil) == 0,
+            "没有上次结果时回落到主屏")
+        try self.expect(
+            DockPlacement.hostIndex(edge: .bottom, frames: frames, visibleFrames: noDock, lastHost: 5) == 0,
+            "上次结果的下标越界时不采用")
+
+        // 上下叠放的两块屏幕右边对齐时，右侧 Dock 的候选有两个，以让出空间的那块为准。
+        let stacked = [CGRect(x: 0, y: 0, width: 1920, height: 1080),
+                       CGRect(x: 0, y: 1080, width: 1920, height: 1080)]
+        let dockOnUpper = [CGRect(x: 0, y: 0, width: 1920, height: 1050),
+                           CGRect(x: 0, y: 1080, width: 1860, height: 1080)]
+        try self.expect(
+            DockPlacement.hostIndex(edge: .right, frames: stacked, visibleFrames: dockOnUpper, lastHost: 0) == 1,
+            "同侧对齐的多块屏幕以可用区域让位判定")
+
+        try self.expect(
+            DockPlacement.hostIndex(edge: .bottom, frames: [], visibleFrames: [], lastHost: nil) == nil,
+            "没有屏幕时不给结果")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {

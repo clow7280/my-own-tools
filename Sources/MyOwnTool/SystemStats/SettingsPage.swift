@@ -9,12 +9,17 @@ struct SettingsActions {
     var setSnapEnabled: (Bool) -> Void
     var loginItemState: () -> Bool?   // nil = 非 .app 运行，不可用
     var setLoginItem: (Bool) -> Void
+    var isDockAutoHideAvailable: () -> Bool
+    var isDockAutoHideEnabled: () -> Bool
+    var setDockAutoHideEnabled: (Bool) -> Void
+    var dockDisplays: () -> [DockAutoHideController.Display]
+    var setDockAutoHide: (_ autoHide: Bool, _ displayName: String) -> Void
     var openAXSettings: () -> Void
     var restart: () -> Void
     var quit: () -> Void
 }
 
-/// 拖拽分屏 / 开机自启 / 版本与重启退出
+/// 拖拽分屏 / Dock 自动隐藏 / 开机自启 / 版本与重启退出
 final class SettingsPage: FlippedView {
     private(set) var contentHeight: CGFloat = 0
 
@@ -23,6 +28,12 @@ final class SettingsPage: FlippedView {
     private let permissionDot = DotView()
     private let permissionStatus = PageUI.label(size: 11, weight: .medium, color: .tertiaryLabelColor)
     private let permissionButton = NSButton(title: "打开设置", target: nil, action: nil)
+    private let dockSwitch = NSSwitch()
+    private let dockSubtitle = PageUI.label(size: 10.5, color: .tertiaryLabelColor)
+    /// 每块显示器一行，按 builtDisplayNames 的顺序排列，开关的 tag 即下标
+    private var displaySwitches: [NSSwitch] = []
+    private var displaySubtitles: [NSTextField] = []
+    private var builtDisplayNames: [String] = []
     private let loginSwitch = NSSwitch()
     private let loginSubtitle = PageUI.label(size: 10.5, color: .tertiaryLabelColor)
 
@@ -31,15 +42,25 @@ final class SettingsPage: FlippedView {
     init(actions: SettingsActions) {
         self.actions = actions
         super.init(frame: .zero)
+        build()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// 显示器行数随接入的显示器变化，整页重建最简单；常驻控件会随新卡片重新挂载
+    private func build() {
+        subviews.forEach { $0.removeFromSuperview() }
+        displaySwitches = []
+        displaySubtitles = []
+        builtDisplayNames = actions.dockDisplays().map(\.name)
 
         var y: CGFloat = 0
         y = buildSnapCard(top: y) + PageUI.cardGap
+        y = buildDockCard(top: y) + PageUI.cardGap
         y = buildLoginCard(top: y) + PageUI.cardGap
         y = buildFooter(top: y)
         contentHeight = y
     }
-
-    required init?(coder: NSCoder) { fatalError() }
 
     /// 行：标题 + 说明 + 右侧控件（控件由调用方定位）
     private func addRow(_ title: String, subtitle: String?, y: CGFloat, in card: CardView,
@@ -88,6 +109,38 @@ final class SettingsPage: FlippedView {
         permissionButton.action = #selector(openAX)
         placeTrailing(permissionButton, y: y, size: NSSize(width: 76, height: 22), in: card)
         y += Self.rowHeight
+
+        card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
+        addSubview(card)
+        return top + y
+    }
+
+    private func buildDockCard(top: CGFloat) -> CGFloat {
+        let card = CardView()
+        var y: CGFloat = 2
+
+        _ = addRow("按显示器隐藏 Dock", subtitle: nil, y: y, in: card)
+        dockSubtitle.frame = NSRect(x: PageUI.cardPadding, y: y + 24, width: PageUI.innerWidth - 90, height: 13)
+        card.addSubview(dockSubtitle)
+        dockSwitch.controlSize = .small
+        dockSwitch.target = self
+        dockSwitch.action = #selector(toggleDock)
+        placeTrailing(dockSwitch, y: y, size: dockSwitch.intrinsicContentSize, in: card)
+        y += Self.rowHeight
+
+        for (index, name) in builtDisplayNames.enumerated() {
+            PageUI.separator(in: card, y: y)
+            let subtitle = addRow(name, subtitle: "", y: y, in: card)!
+            let toggle = NSSwitch()
+            toggle.controlSize = .small
+            toggle.tag = index
+            toggle.target = self
+            toggle.action = #selector(toggleDisplay(_:))
+            placeTrailing(toggle, y: y, size: toggle.intrinsicContentSize, in: card)
+            displaySwitches.append(toggle)
+            displaySubtitles.append(subtitle)
+            y += Self.rowHeight
+        }
 
         card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
         addSubview(card)
@@ -144,8 +197,14 @@ final class SettingsPage: FlippedView {
         return top + 26
     }
 
-    /// 页面展示时同步当前状态
+    /// 页面展示时同步当前状态；显示器有增减时先重建，调用方随后按新的 contentHeight 重排弹窗
     func onShow() {
+        if actions.dockDisplays().map(\.name) != builtDisplayNames { build() }
+        refresh()
+    }
+
+    /// 回读各控件的真实状态，开关操作后也走这里，不重建页面以免弹窗高度在展开时跳变
+    private func refresh() {
         snapSwitch.state = actions.isSnapEnabled() ? .on : .off
 
         let trusted = actions.isTrusted()
@@ -158,12 +217,36 @@ final class SettingsPage: FlippedView {
         loginSwitch.isEnabled = login != nil
         loginSwitch.state = login == true ? .on : .off
         loginSubtitle.stringValue = login == nil ? "需以 .app 方式运行" : "登录时静默启动，无 Dock 图标"
+
+        let dockAvailable = actions.isDockAutoHideAvailable()
+        let dockEnabled = dockAvailable && actions.isDockAutoHideEnabled()
+        dockSwitch.isEnabled = dockAvailable
+        dockSwitch.state = dockEnabled ? .on : .off
+        dockSubtitle.stringValue = dockAvailable ? "按 Dock 所在显示器的设置自动隐藏" : "当前系统不支持"
+        // 按名称对应：弹窗开着时插拔显示器不重建，已不在的显示器行保持原样
+        let displays = actions.dockDisplays()
+        for (index, name) in builtDisplayNames.enumerated() {
+            guard let display = displays.first(where: { $0.name == name }) else { continue }
+            displaySwitches[index].isEnabled = dockEnabled
+            displaySwitches[index].state = display.autoHide ? .on : .off
+            displaySubtitles[index].stringValue = (display.isBuiltin ? "内置显示器" : "外接显示器")
+                + (display.hostsDock ? " · Dock 所在" : "")
+        }
     }
 
     @objc private func toggleSnap() { actions.setSnapEnabled(snapSwitch.state == .on) }
+    @objc private func toggleDock() {
+        actions.setDockAutoHideEnabled(dockSwitch.state == .on)
+        refresh()
+    }
+    @objc private func toggleDisplay(_ sender: NSSwitch) {
+        guard builtDisplayNames.indices.contains(sender.tag) else { return }
+        actions.setDockAutoHide(sender.state == .on, builtDisplayNames[sender.tag])
+        refresh()
+    }
     @objc private func toggleLogin() {
         actions.setLoginItem(loginSwitch.state == .on)
-        onShow()    // 注册可能失败，回读真实状态
+        refresh()   // 注册可能失败，回读真实状态
     }
     @objc private func openAX() { actions.openAXSettings() }
     @objc private func restart() { actions.restart() }

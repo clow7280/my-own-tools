@@ -5,6 +5,7 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let snapController = SnapController()
     private let layoutEditController = LayoutEditController()
+    private let dockAutoHide = DockAutoHideController()
     private var permissionTimer: Timer?
     private var permissionChecks = 0
 
@@ -30,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LayoutStore.load()
         LayoutStore.startWatching()
         setupStatsItem()
+        // 切换 Dock 不依赖辅助功能授权，启动即生效
+        dockAutoHide.start()
 
         // 登录项记录的是注册时的应用路径；若 .app 被移动过，
         // 在新位置启动时重新注册一次即可刷新记录
@@ -147,6 +150,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NSLog("MyOwnTools: 切换开机自启失败：\(error.localizedDescription)")
                 }
             },
+            isDockAutoHideAvailable: { [weak self] in self?.dockAutoHide.isAvailable ?? false },
+            isDockAutoHideEnabled: { [weak self] in self?.dockAutoHide.isEnabled ?? false },
+            setDockAutoHideEnabled: { [weak self] in self?.dockAutoHide.isEnabled = $0 },
+            dockDisplays: { [weak self] in self?.dockAutoHide.displays() ?? [] },
+            setDockAutoHide: { [weak self] in self?.dockAutoHide.setAutoHide($0, forDisplay: $1) },
             openAXSettings: { Permissions.openAccessibilitySettings() },
             restart: { [weak self] in self?.relaunch() },
             quit: { NSApp.terminate(nil) }
