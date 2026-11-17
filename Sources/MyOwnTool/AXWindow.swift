@@ -69,11 +69,43 @@ struct AXWindow {
         return CGRect(origin: position, size: size)
     }
 
-    /// 部分应用需要按「尺寸→位置→尺寸」的顺序设置才能贴合目标区域
+    /// 部分应用需要按「尺寸→位置→尺寸」的顺序设置才能贴合目标区域。
+    ///
+    /// App 开启 `AXEnhancedUserInterface` 时（Chrome、Electron 系应用常见，
+    /// 由辅助工具打开后会一直保持），会把经 AX 设置的位置和尺寸做成动画，
+    /// 动画进行中下一步设置容易被吞掉，表现为只改了大小、或慢慢滑到目标位置。
+    /// 所以设置期间临时关掉它，设完立即恢复原值，不影响依赖它的辅助工具。
     func setFrame(_ rect: CGRect) {
+        let app = applicationElement
+        let enhanced = app.map { Self.enhancedUserInterface(of: $0) } ?? false
+        if enhanced, let app { Self.setEnhancedUserInterface(false, of: app) }
+        defer { if enhanced, let app { Self.setEnhancedUserInterface(true, of: app) } }
+
         setSize(rect.size)
         setPosition(rect.origin)
         setSize(rect.size)
+    }
+
+    private static let enhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
+
+    private var applicationElement: AXUIElement? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.3)
+        return app
+    }
+
+    private static func enhancedUserInterface(of app: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, enhancedUserInterfaceAttribute, &value) == .success else {
+            return false
+        }
+        return (value as? Bool) ?? false
+    }
+
+    private static func setEnhancedUserInterface(_ enabled: Bool, of app: AXUIElement) {
+        AXUIElementSetAttributeValue(app, enhancedUserInterfaceAttribute, enabled as CFBoolean)
     }
 
     private func setPosition(_ point: CGPoint) {

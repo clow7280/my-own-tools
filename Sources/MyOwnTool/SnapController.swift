@@ -51,6 +51,17 @@ final class SnapController {
     }
     private var session: DragSession?
 
+    /// 落位后复查的时间点（秒，相对松手时刻）。
+    /// 全局监视器收到 mouseUp 时，系统那边的窗口拖动可能还没收尾，
+    /// 收尾时会把窗口放回松手处，盖掉刚设好的位置而尺寸保留，于是出现「只改了大小没挪位置」；
+    /// 目标 App 正忙于处理拖动结束时，AX 设置也可能超时失败。所以落位后再复查，位置不对就重设。
+    /// 间隔取一帧：被盖掉后在下一帧内纠正，看起来与一次落位无异，不会出现可见的跳动；
+    /// 每轮只是一次 AX 读取，0.5 秒内约 30 次，开销可以忽略。
+    private static let settleChecks: [TimeInterval] =
+        Array(stride(from: 1.0 / 60, through: 0.5, by: 1.0 / 60))
+    /// 复查轮次的代号：新一次按下鼠标即作废上一轮还没跑完的复查，免得和用户的新拖动打架
+    private var settleGeneration = 0
+
     func start() {
         guard eventMonitor == nil else { return }
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .flagsChanged]
@@ -66,6 +77,7 @@ final class SnapController {
 
         switch event.type {
         case .leftMouseDown:
+            settleGeneration += 1
             session = nil
             guard shiftHeld else { break }
             beginSession()
@@ -137,6 +149,27 @@ final class SnapController {
         guard commit, let ended, ended.confirmedMoving, let target = ended.target else { return }
         let appliedFrame = Coords.cocoaToAX(target.rect)
         ended.window.setFrame(appliedFrame)
+        settle(ended.window, at: appliedFrame)
+    }
+
+    /// 按 settleChecks 复查窗口位置，偏离目标就重设整个 frame。
+    /// 只比较位置：有最小尺寸或按字符网格取整的 App 本来就贴不满尺寸，按尺寸判定会白白重设。
+    private func settle(_ window: AXWindow, at frame: CGRect) {
+        settleGeneration += 1
+        let generation = settleGeneration
+        for delay in Self.settleChecks {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.settleGeneration == generation else { return }
+                // 读不到说明窗口已关或 App 无响应：放弃剩余轮次，免得每轮都在主线程上等满 AX 超时
+                guard let current = window.frame else {
+                    self.settleGeneration += 1
+                    return
+                }
+                let drift = abs(current.minX - frame.minX) + abs(current.minY - frame.minY)
+                guard drift > 1 else { return }
+                window.setFrame(frame)
+            }
+        }
     }
 
     /// Shift 松开：隐藏标记并清空吸附目标，但保留会话，重新按下 Shift 可继续
