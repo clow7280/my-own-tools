@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let snapController = SnapController()
     private let layoutEditController = LayoutEditController()
     private let dockAutoHide = DockAutoHideController()
+    private let keepAwake = KeepAwakeController()
     private var permissionTimer: Timer?
     private var permissionChecks = 0
 
@@ -31,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LayoutStore.load()
         LayoutStore.startWatching()
         setupStatsItem()
+        keepAwake.onIndicatorChanged = { [weak self] in self?.showKeepAwakeDivider($0) }
+        // 上次异常退出时补撤残留的合盖禁用标记
+        keepAwake.start()
         // 切换 Dock 不依赖辅助功能授权，启动即生效
         dockAutoHide.start()
 
@@ -66,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 编辑控制器持有长按定时器、全局与本地事件监视器和覆盖窗口，退出前一并撤掉
         layoutEditController.stop()
         statsMonitor.stop()
+        // 合盖禁用标记是内核全局状态，不随进程退出回收，必须主动撤
+        keepAwake.stop()
     }
 
     /// 用一次性定时器逐次重排而不是重复定时器，间隔才能随等待时长变化
@@ -117,6 +123,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statsMonitor.start()
     }
 
+    /// 网速与竖柱之间的分隔条：只开保持唤醒为蓝，合盖不休眠同时生效为橙（DESIGN.md「菜单栏常驻区」）
+    private func showKeepAwakeDivider(_ indicator: KeepAwakeController.Indicator) {
+        switch indicator {
+        case .off: statsBarView?.keepAwakeDivider = nil
+        case .awake: statsBarView?.keepAwakeDivider = StatsPalette.keepAwakeDivider
+        case .awakeWithLid: statsBarView?.keepAwakeDivider = StatsPalette.lidAwakeDivider
+        }
+    }
+
     @objc private func toggleStatsPopup() {
         guard let button = statsItem?.button else { return }
         if statsPopup == nil {
@@ -150,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NSLog("MyOwnTools: 切换开机自启失败：\(error.localizedDescription)")
                 }
             },
+            keepAwake: keepAwake,
             isDockAutoHideAvailable: { [weak self] in self?.dockAutoHide.isAvailable ?? false },
             isDockAutoHideEnabled: { [weak self] in self?.dockAutoHide.isEnabled ?? false },
             setDockAutoHideEnabled: { [weak self] in self?.dockAutoHide.isEnabled = $0 },

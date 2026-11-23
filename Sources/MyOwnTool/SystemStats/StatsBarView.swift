@@ -2,7 +2,7 @@ import AppKit
 import StatsCore
 
 /// 菜单栏内容视图，从左到右两块（DESIGN.md「菜单栏常驻区」）：
-/// 网速两行数字（上=上传 下=下载）| CPU/GPU/RAM 竖柱。
+/// 网速两行数字（上=上传 下=下载）| CPU/GPU/RAM 竖柱，保持唤醒生效时两块之间加彩色分隔条。
 /// 竖柱从底向上填充指标色，1pt 边框按温度分级着色（CPU/GPU 取自身温度，RAM 取硬盘温度），
 /// ≥90℃ 以 1.1s 周期闪烁并带红色光晕。
 /// 固定总宽避免数字跳动引起菜单栏抖动；作为 button 子视图自动跟随菜单栏明暗。
@@ -33,6 +33,14 @@ final class StatsBarView: NSView {
     private static let barsWidth: CGFloat = barVisualWidth * 3 + barGap * 2
 
     static let totalWidth: CGFloat = margin + speedWidth + blockGap + barsWidth + margin
+
+    /// 保持唤醒分隔条，落在网速与竖柱之间的块间距正中
+    private static let dividerSize = NSSize(width: 1.5, height: 14)
+
+    /// 保持唤醒分隔条颜色，nil 表示不画
+    var keepAwakeDivider: NSColor? {
+        didSet { if keepAwakeDivider != oldValue { needsDisplay = true } }
+    }
 
     // MARK: - 数据
 
@@ -77,6 +85,7 @@ final class StatsBarView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         drawSpeed()
         drawBars()
+        drawKeepAwakeDivider()
     }
 
     // MARK: - 网速
@@ -100,8 +109,10 @@ final class StatsBarView: NSView {
 
     // MARK: - 竖柱
 
+    private static let barsLeft: CGFloat = contentLeft + speedWidth + blockGap
+
     private func drawBars() {
-        var x = Self.contentLeft + Self.speedWidth + Self.blockGap
+        var x = Self.barsLeft
         let fillTop = (bounds.height - Self.barFillHeight) / 2
 
         drawBar(x: x, y: fillTop, usage: sample.cpuUsage, fill: StatsPalette.cpu, tier: TempTier(sample.cpuTemp))
@@ -154,4 +165,15 @@ final class StatsBarView: NSView {
         }
     }
 
+    // MARK: - 保持唤醒分隔条
+
+    private func drawKeepAwakeDivider() {
+        guard let color = keepAwakeDivider else { return }
+        let size = Self.dividerSize
+        let rect = NSRect(x: Self.barsLeft - Self.blockGap / 2 - size.width / 2,
+                          y: (bounds.height - size.height) / 2,
+                          width: size.width, height: size.height)
+        color.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: size.width / 2, yRadius: size.width / 2).fill()
+    }
 }

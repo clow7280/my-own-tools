@@ -21,6 +21,10 @@ enum StatsPalette {
     // 轨道中性色
     static let barTrack = dynamic(0x000000, 0.09, 0xFFFFFF, 0.18)     // 菜单栏竖柱
 
+    // 保持唤醒分隔条：开关状态而非指标，直接用系统动态色
+    static let keepAwakeDivider = NSColor.systemBlue
+    static let lidAwakeDivider = NSColor.systemOrange
+
     // 磁盘/网络 sparkline 的中性双线（主 = 下载/读取，副 = 上传/写入）
     static let neutralPrimary = dynamic(0x000000, 0.6, 0xFFFFFF, 0.65)
     static let neutralSecondary = dynamic(0x000000, 0.32, 0xFFFFFF, 0.35)

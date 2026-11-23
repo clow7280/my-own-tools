@@ -24,6 +24,7 @@ private enum StatsCoreChecks {
             try self.checkLayoutRectangularSelection()
             try self.checkLayoutZoneRects()
             try self.checkDockPlacement()
+            try self.checkKeepAwakePolicy()
             print("StatsCoreChecks: all checks passed")
         } catch {
             fputs("StatsCoreChecks failed: \(error)\n", stderr)
@@ -842,6 +843,36 @@ private enum StatsCoreChecks {
         try self.expect(
             DockPlacement.hostIndex(edge: .bottom, frames: [], visibleFrames: [], lastHost: nil) == nil,
             "没有屏幕时不给结果")
+    }
+
+    /// 保持唤醒的自动结束：低电量只在用电池且严格低于阈值时触发，
+    /// 读不到电量不贸然结束；截止时间按墙钟判定，恰好到点即结束。
+    private static func checkKeepAwakePolicy() throws {
+        try self.expect(KeepAwakePolicy.batteryPercent(current: 19, max: 100) == 19, "常见的百分比容量原样返回")
+        try self.expect(KeepAwakePolicy.batteryPercent(current: 2_000, max: 4_000) == 50, "按毫安时上报的容量换算成百分比")
+        try self.expect(KeepAwakePolicy.batteryPercent(current: 120, max: 100) == 100, "容量超出最大值时夹到 100")
+        try self.expect(KeepAwakePolicy.batteryPercent(current: 50, max: 0) == nil, "最大容量为 0 时视为读不到")
+        try self.expect(KeepAwakePolicy.batteryPercent(current: nil, max: 100) == nil, "缺少当前容量时视为读不到")
+
+        try self.expect(KeepAwakePolicy.shouldStopForBattery(onBattery: true, percent: 19, threshold: 20),
+                        "用电池且低于阈值时结束")
+        try self.expect(!KeepAwakePolicy.shouldStopForBattery(onBattery: true, percent: 20, threshold: 20),
+                        "恰好等于阈值时不结束")
+        try self.expect(!KeepAwakePolicy.shouldStopForBattery(onBattery: false, percent: 5, threshold: 20),
+                        "接电源时电量再低也不结束")
+        try self.expect(!KeepAwakePolicy.shouldStopForBattery(onBattery: true, percent: 5, threshold: nil),
+                        "未启用阈值时不结束")
+        try self.expect(!KeepAwakePolicy.shouldStopForBattery(onBattery: true, percent: nil, threshold: 20),
+                        "读不到电量时不结束")
+        try self.expect(KeepAwakePolicy.batteryThresholds.contains(KeepAwakePolicy.defaultBatteryThreshold),
+                        "默认阈值必须是设置页可选的一档")
+        try self.expect(KeepAwakePolicy.durations.first == .some(nil), "定时关闭的首项为不限，作为每次开启的默认值")
+
+        let now = Date(timeIntervalSinceReferenceDate: 1_000)
+        try self.expect(!KeepAwakePolicy.shouldStopForDeadline(now: now, deadline: nil), "不限时长永不到点")
+        try self.expect(KeepAwakePolicy.shouldStopForDeadline(now: now, deadline: now), "恰好到点即结束")
+        try self.expect(!KeepAwakePolicy.shouldStopForDeadline(now: now, deadline: now.addingTimeInterval(1)),
+                        "截止时间未到不结束")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {

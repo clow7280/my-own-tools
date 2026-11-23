@@ -1,4 +1,5 @@
 import AppKit
+import StatsCore
 
 // MARK: - 设置页
 
@@ -9,6 +10,7 @@ struct SettingsActions {
     var setSnapEnabled: (Bool) -> Void
     var loginItemState: () -> Bool?   // nil = 非 .app 运行，不可用
     var setLoginItem: (Bool) -> Void
+    var keepAwake: KeepAwakeController
     var isDockAutoHideAvailable: () -> Bool
     var isDockAutoHideEnabled: () -> Bool
     var setDockAutoHideEnabled: (Bool) -> Void
@@ -19,11 +21,17 @@ struct SettingsActions {
     var quit: () -> Void
 }
 
-/// 拖拽分屏 / Dock 自动隐藏 / 开机自启 / 版本与重启退出
+/// 保持唤醒 / 拖拽分屏 / Dock 自动隐藏 / 开机自启 / 版本与重启退出
 final class SettingsPage: FlippedView {
     private(set) var contentHeight: CGFloat = 0
 
     private let actions: SettingsActions
+    private let awakeSwitch = NSSwitch()
+    private let awakeSubtitle = PageUI.label(size: 10.5, color: .tertiaryLabelColor)
+    private let lidSwitch = NSSwitch()
+    private let lidSubtitle = PageUI.label(size: 10.5, color: .tertiaryLabelColor)
+    private let durationPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let batteryPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let snapSwitch = NSSwitch()
     private let permissionDot = DotView()
     private let permissionStatus = PageUI.label(size: 11, weight: .medium, color: .tertiaryLabelColor)
@@ -55,6 +63,7 @@ final class SettingsPage: FlippedView {
         builtDisplayNames = actions.dockDisplays().map(\.name)
 
         var y: CGFloat = 0
+        y = buildKeepAwakeCard(top: y) + PageUI.cardGap
         y = buildSnapCard(top: y) + PageUI.cardGap
         y = buildDockCard(top: y) + PageUI.cardGap
         y = buildLoginCard(top: y) + PageUI.cardGap
@@ -83,6 +92,71 @@ final class SettingsPage: FlippedView {
                             width: size.width, height: size.height)
         card.addSubview(view)
     }
+
+    /// 弹出菜单统一为小号控件，宽度与开关行的控件一样贴右
+    private static let popupSize = NSSize(width: 92, height: 22)
+
+    private func buildKeepAwakeCard(top: CGFloat) -> CGFloat {
+        let card = CardView()
+        var y: CGFloat = 2
+
+        _ = addRow("保持唤醒", subtitle: nil, y: y, in: card)
+        awakeSubtitle.frame = NSRect(x: PageUI.cardPadding, y: y + 24, width: PageUI.innerWidth - 90, height: 13)
+        card.addSubview(awakeSubtitle)
+        awakeSwitch.controlSize = .small
+        awakeSwitch.target = self
+        awakeSwitch.action = #selector(toggleAwake)
+        placeTrailing(awakeSwitch, y: y, size: awakeSwitch.intrinsicContentSize, in: card)
+        y += Self.rowHeight
+        PageUI.separator(in: card, y: y)
+
+        _ = addRow("合盖时不休眠", subtitle: nil, y: y, in: card)
+        lidSubtitle.frame = NSRect(x: PageUI.cardPadding, y: y + 24, width: PageUI.innerWidth - 90, height: 13)
+        card.addSubview(lidSubtitle)
+        lidSwitch.controlSize = .small
+        lidSwitch.target = self
+        lidSwitch.action = #selector(toggleLid)
+        placeTrailing(lidSwitch, y: y, size: lidSwitch.intrinsicContentSize, in: card)
+        y += Self.rowHeight
+        PageUI.separator(in: card, y: y)
+
+        _ = addRow("定时关闭", subtitle: "每次开启默认不限时", y: y, in: card)
+        configurePopup(durationPopup, titles: KeepAwakePolicy.durations.map(Self.durationTitle),
+                       action: #selector(pickDuration))
+        placeTrailing(durationPopup, y: y, size: Self.popupSize, in: card)
+        y += Self.rowHeight
+        PageUI.separator(in: card, y: y)
+
+        _ = addRow("低电量时关闭", subtitle: "使用电池且电量低于该值时关闭", y: y, in: card)
+        configurePopup(batteryPopup, titles: KeepAwakePolicy.batteryThresholds.map { $0.map { "\($0)%" } ?? "不启用" },
+                       action: #selector(pickBattery))
+        placeTrailing(batteryPopup, y: y, size: Self.popupSize, in: card)
+        y += Self.rowHeight
+
+        card.frame = NSRect(x: 0, y: top, width: PageUI.pageWidth, height: y)
+        addSubview(card)
+        return top + y
+    }
+
+    private func configurePopup(_ popup: NSPopUpButton, titles: [String], action: Selector) {
+        popup.removeAllItems()
+        popup.addItems(withTitles: titles)
+        popup.controlSize = .small
+        popup.font = .systemFont(ofSize: 11)
+        popup.target = self
+        popup.action = action
+    }
+
+    private static func durationTitle(_ minutes: Int?) -> String {
+        guard let minutes else { return "不限" }
+        return minutes < 60 ? "\(minutes) 分钟" : "\(minutes / 60) 小时"
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 
     private func buildSnapCard(top: CGFloat) -> CGFloat {
         let card = CardView()
@@ -205,6 +279,7 @@ final class SettingsPage: FlippedView {
 
     /// 回读各控件的真实状态，开关操作后也走这里，不重建页面以免弹窗高度在展开时跳变
     private func refresh() {
+        refreshKeepAwake()
         snapSwitch.state = actions.isSnapEnabled() ? .on : .off
 
         let trusted = actions.isTrusted()
@@ -234,6 +309,46 @@ final class SettingsPage: FlippedView {
         }
     }
 
+    private func refreshKeepAwake() {
+        let keepAwake = actions.keepAwake
+        awakeSwitch.state = keepAwake.isActive ? .on : .off
+        if let deadline = keepAwake.deadline {
+            awakeSubtitle.stringValue = "将于 \(Self.clockFormatter.string(from: deadline)) 自动关闭"
+        } else if !keepAwake.isActive, keepAwake.stoppedForLowBattery {
+            awakeSubtitle.stringValue = "电量过低，已自动关闭"
+        } else {
+            awakeSubtitle.stringValue = "阻止自动息屏与闲置休眠"
+        }
+
+        lidSwitch.isEnabled = keepAwake.isLidAvailable
+        lidSwitch.state = keepAwake.isLidAvailable && keepAwake.preventsLidSleep ? .on : .off
+        lidSubtitle.stringValue = keepAwake.isLidAvailable ? "合上屏幕后继续运行" : "当前系统不支持"
+
+        durationPopup.isEnabled = keepAwake.isActive
+        durationPopup.selectItem(at: KeepAwakePolicy.durations.firstIndex(of: keepAwake.durationMinutes) ?? 0)
+        batteryPopup.selectItem(at: KeepAwakePolicy.batteryThresholds.firstIndex(of: keepAwake.batteryThreshold) ?? 0)
+    }
+
+    @objc private func toggleAwake() {
+        actions.keepAwake.setActive(awakeSwitch.state == .on)
+        refresh()   // 低电量时开启会被立即关回，回读真实状态
+    }
+    @objc private func toggleLid() {
+        actions.keepAwake.preventsLidSleep = lidSwitch.state == .on
+        refresh()
+    }
+    @objc private func pickDuration() {
+        let index = durationPopup.indexOfSelectedItem
+        guard KeepAwakePolicy.durations.indices.contains(index) else { return }
+        actions.keepAwake.setDuration(KeepAwakePolicy.durations[index])
+        refresh()
+    }
+    @objc private func pickBattery() {
+        let index = batteryPopup.indexOfSelectedItem
+        guard KeepAwakePolicy.batteryThresholds.indices.contains(index) else { return }
+        actions.keepAwake.batteryThreshold = KeepAwakePolicy.batteryThresholds[index]
+        refresh()   // 调高阈值可能立即触发低电量关闭
+    }
     @objc private func toggleSnap() { actions.setSnapEnabled(snapSwitch.state == .on) }
     @objc private func toggleDock() {
         actions.setDockAutoHideEnabled(dockSwitch.state == .on)
